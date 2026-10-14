@@ -111,6 +111,16 @@ The default is one cycle. UART evidence is saved in
 verification returns an error. A successful short check does not establish
 long-term stability.
 
+To build and flash without waiting for measurements or reading UART afterward:
+
+```sh
+./platformio.sh --flash --cycles 0
+```
+
+Image checksums are still verified and the application is reset to start.
+The script then releases the port immediately; runtime behavior is not checked.
+The station continues its normal measurement/sleep cycle independently.
+
 **Default flashing replaces the filesystem, including pending measurements.**
 For an update retaining device settings and the queue:
 

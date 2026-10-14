@@ -83,6 +83,14 @@ class ShellTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn('--with-filesystem', self.calls()[-1]['args'])
 
+    def test_zero_cycles_flashes_without_uart_monitoring(self):
+        result = self.run_script('--flash', '--cycles', '0')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = self.calls()[-1]['args']
+        self.assertIn('--no-monitor', args)
+        self.assertNotIn('--verify-cycles', args)
+        self.assertIn('--with-filesystem', args)
+
     def test_led_test_requests_service_test_without_measurement_cycles(self):
         result = self.run_script('--flash', '--led-test')
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -187,6 +195,33 @@ class CyclesTest(unittest.TestCase):
 
 
 class FlashVerificationTests(unittest.TestCase):
+    def test_no_monitor_verifies_flash_resets_and_closes_without_reading_uart(self):
+        import flash
+        import hashlib
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            build = root / '.pio/build/station'
+            build.mkdir(parents=True)
+            image = b'\xe9\x02\x02\x40' + b'x' * 5000
+            (build / 'firmware.bin').write_bytes(image)
+            (build / 'first-boot.log').write_text('OLD successful runtime log')
+            port, esp = Mock(), Mock()
+            esp.read_mac.return_value = range(6)
+            esp.flash_md5sum.return_value = hashlib.md5(image).hexdigest()
+            with patch.object(flash, 'PROJECT', root), \
+                 patch.object(flash, 'connect', return_value=(port, esp)), \
+                 patch.object(flash, 'write_flash') as write, \
+                 patch.object(sys, 'argv', ['flash.py', 'write', '--port', 'test-port', '--no-monitor']), \
+                 redirect_stdout(io.StringIO()):
+                flash.main()
+            write.assert_called_once()
+            esp.flash_md5sum.assert_called_once_with(0, len(image))
+            esp.hard_reset.assert_called_once()
+            port.read.assert_not_called()
+            port.close.assert_called_once()
+            self.assertIn('runtime was not verified', (build / 'first-boot.log').read_text())
+
     def test_flash_is_initialized_before_checking_chip_or_reading(self):
         from flash import connect, FLASH_SIZE
         from unittest.mock import Mock, patch

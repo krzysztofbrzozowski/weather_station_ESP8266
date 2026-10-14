@@ -127,6 +127,7 @@ def main():
     parser.add_argument('--export', type=Path)
     parser.add_argument('--manual-reset', action='store_true')
     parser.add_argument('--service', action='store_true', help='Request service mode on first boot after writing')
+    parser.add_argument('--no-monitor', action='store_true', help='Exit after verified flashing and reset; do not capture UART or check cycles')
     parser.add_argument('--led-test', action='store_true', help='Enter service mode and test GPIO2 and GPIO1 separately with UART disabled')
     parser.add_argument('--verify-cycles', type=int, default=0, help='Verify 1-5 real measurement/sleep cycles after writing station')
     parser.add_argument('--baud', type=int, default=115200,
@@ -139,6 +140,8 @@ def main():
         if args.action != 'write' or args.environment != 'station' or args.verify_cycles:
             parser.error('--led-test requires writing station without --verify-cycles')
         args.service = True
+    if args.no_monitor and (args.action == 'backup' or args.service or args.verify_cycles):
+        parser.error('--no-monitor cannot be combined with backup, service mode or cycle verification')
     if not 0 <= args.verify_cycles <= 5 or (args.verify_cycles and
             (args.action != 'write' or args.environment != 'station' or args.service)):
         parser.error('--verify-cycles requires writing station without --service, and accepts 1-5')
@@ -189,6 +192,10 @@ def main():
         port.dtr = False
         # With SJ2 open, RTS starts a normal boot reliably on this adapter.
         esp.hard_reset()
+        if args.no_monitor:
+            (build / 'first-boot.log').write_text('UART monitoring skipped (--no-monitor); runtime was not verified.\n')
+            print('Flash complete. UART monitoring skipped; runtime was not verified.', flush=True)
+            return
         port.baudrate = 115200
         port.timeout = 0.1
         expected = json.loads((PROJECT / 'data/config.json').read_text()) if args.action == 'write' and args.with_filesystem else {}

@@ -15,11 +15,11 @@ usage() {
     cat <<'EOF'
 Usage:
   ./platformio.sh --build
-  ./platformio.sh --flash [--port PORT] [--cycles 1..5 | --led-test] [--code-only] [--manual-reset]
+  ./platformio.sh --flash [--port PORT] [--cycles 0..5 | --led-test] [--code-only] [--manual-reset]
 
 --build         Prepare firmware/.settings, build station and its filesystem, verify images.
 --flash         Run the same build, flash both images, verify measurement/sleep cycles.
---cycles N      Number of cycles to check after flashing (default: 1).
+--cycles N      Number of cycles to check (default: 1); 0 exits after flashing/reset.
 --code-only     Preserve settings and measurement queue already on the device.
 --manual-reset  Wait for manual bootloader entry instead of automatic reset.
 --led-test      Flash, enter service mode and identify the LED pin; no measurement cycles.
@@ -45,7 +45,7 @@ while [[ $# -gt 0 ]]; do
         *) usage >&2; exit 2 ;;
     esac
 done
-[[ -n "$ACTION" && "$CYCLES" =~ ^[1-5]$ ]] || { usage >&2; exit 2; }
+[[ -n "$ACTION" && "$CYCLES" =~ ^[0-5]$ ]] || { usage >&2; exit 2; }
 if [[ "$ACTION" == --build && ( "$CODE_ONLY" == 1 || "$MANUAL" == 1 || "$LED_TEST" == 1 ) ]]; then
     usage >&2; exit 2
 fi
@@ -72,7 +72,13 @@ printf 'Project: %s\nFirmware: station\n' "$PROJECT_ROOT"
 if [[ "$ACTION" == --flash ]]; then
     "$PYTHON" "$TOOLS/deploy_manifest.py" verify
     FLASH_ARGS=(write --port "$PORT" --environment station --connect-attempts 0)
-    if [[ "$LED_TEST" == 1 ]]; then FLASH_ARGS+=(--led-test); else FLASH_ARGS+=(--verify-cycles "$CYCLES"); fi
+    if [[ "$LED_TEST" == 1 ]]; then
+        FLASH_ARGS+=(--led-test)
+    elif [[ "$CYCLES" == 0 ]]; then
+        FLASH_ARGS+=(--no-monitor)
+    else
+        FLASH_ARGS+=(--verify-cycles "$CYCLES")
+    fi
     if [[ "$CODE_ONLY" == 0 ]]; then
         echo 'Uploading firmware and settings; the existing measurement queue will be replaced.'
         FLASH_ARGS+=(--with-filesystem)
