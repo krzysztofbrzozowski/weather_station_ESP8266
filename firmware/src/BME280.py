@@ -126,7 +126,10 @@ class BME280:
                              self._l1_barray)
 
         # Wait for conversion to complete
+        started = time.ticks_ms()
         while self.i2c.readfrom_mem(self.address, BME280_REGISTER_STATUS, 1)[0] & 0x08:
+            if time.ticks_diff(time.ticks_ms(), started) >= 1000:
+                raise OSError('BME280 conversion timeout')
             time.sleep_ms(5)
 
         # burst readout from 0xF7 to 0xFE, recommended by datasheet
@@ -184,7 +187,7 @@ class BME280:
              (self.dig_H2 / 65536.0 * (1.0 + self.dig_H6 / 67108864.0 * h *
                                        (1.0 + self.dig_H3 / 67108864.0 * h))))
         humidity = h * (1.0 - self.dig_H1 * h / 524288.0)
-        # humidity = max(0, min(100, humidity))
+        humidity = max(0, min(100, humidity))
 
         if result:
             result[0] = temp

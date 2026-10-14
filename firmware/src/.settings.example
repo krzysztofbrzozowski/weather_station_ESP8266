@@ -1,0 +1,12 @@
+API_url = 'Your API url'
+AUTH_TOKEN = 'Your API token'
+BACKUP_FOLDER = 'backup_logs'
+SSID = 'Your SSID'
+PASSWD = 'Your PASSWD'
+
+# Optional; these defaults also apply when omitted from .settings.
+MEASUREMENT_INTERVAL_S = 300
+HTTP_TIMEOUT_S = 3
+BACKUP_MAX_RECORDS = 144
+BACKUP_MIN_FREE_BYTES = 32768
+BACKUP_MAX_SEND = 6
