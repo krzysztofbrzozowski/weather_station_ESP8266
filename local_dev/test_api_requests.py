@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 
 from stubs import machine, network
 
-FIRMWARE = Path(__file__).resolve().parents[1] / 'firmware' / 'src'
+FIRMWARE = Path(__file__).resolve().parents[1] / 'firmware' / 'micropython' / 'src'
 
 
 def load_module(name, path):

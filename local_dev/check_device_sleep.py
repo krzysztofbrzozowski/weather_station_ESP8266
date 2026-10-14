@@ -18,7 +18,7 @@ def main():
                         help='Seconds to wait for a manual reset or natural wake before testing')
     parser.add_argument('--upload-main', type=Path, help='Atomically install this main.py before testing')
     parser.add_argument('--log', type=Path,
-                        default=Path(__file__).resolve().parents[1] / 'firmware/build/sleep-check.log')
+                        default=Path(__file__).resolve().parents[1] / 'firmware/micropython/build/sleep-check.log')
     args = parser.parse_args()
     if not 5 <= args.seconds <= 30:
         parser.error('--seconds must be between 5 and 30')

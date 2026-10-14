@@ -25,7 +25,7 @@ def main():
     )
     args = parser.parse_args()
     print("[local] SIMULATION: Wi-Fi and HTTP are mocked; no readings are sent to the server.")
-    firmware = Path(__file__).resolve().parents[1] / "firmware" / "src"
+    firmware = Path(__file__).resolve().parents[1] / "firmware" / "micropython" / "src"
     state_dir = args.state_dir.resolve()
     state_dir.mkdir(parents=True, exist_ok=True)
     network.offline = args.offline

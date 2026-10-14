@@ -6,7 +6,7 @@ __pycache__/
 *.py[cod]
 .venv/
 local_dev/.state/
-firmware/build/
+firmware/micropython/build/
 .settings
 
 # Private configuration and device/runtime backups
@@ -18,3 +18,10 @@ firmware/build/
 backup_logs/
 *.pem
 *.key
+
+# Native ESP8266 builds, private filesystem images and device exports
+firmware/arduino/.pio/
+firmware/arduino/.pio-core/
+firmware/arduino/data/
+firmware/arduino/device_backups/
+!firmware/arduino/certs/*.pem

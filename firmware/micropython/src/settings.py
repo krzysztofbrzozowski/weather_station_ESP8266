@@ -1,12 +1,17 @@
-"""Read configuration from the device root or next to this module on CPython."""
+"""Read /.settings on the device or firmware/.settings on CPython."""
+import sys
 
 
 def load_settings(path=None):
     if path is None:
-        # ESP8266 builds may omit __file__; deployed settings live at the root.
         module_file = globals().get('__file__', '')
-        directory = module_file.rsplit('/', 1)[0] if '/' in module_file else ''
-        path = directory + '/.settings'
+        if sys.implementation.name == 'cpython' and module_file:
+            # Host layout: firmware/micropython/src/settings.py. Independent
+            # of the simulator's working directory and shared with Arduino.
+            path = module_file.rsplit('/', 3)[0] + '/.settings'
+        else:
+            # Deployed files live at the device root; ESP8266 may omit __file__.
+            path = '/.settings'
 
     values = {}
     try:

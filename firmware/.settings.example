@@ -5,7 +5,7 @@ SSID = 'Your SSID'
 PASSWD = 'Your PASSWD'
 
 # Optional; these defaults also apply when omitted from .settings.
-MEASUREMENT_INTERVAL_S = 300
+MEASUREMENT_INTERVAL_S = 1800
 HTTP_TIMEOUT_S = 3
 BACKUP_MAX_RECORDS = 144
 BACKUP_MIN_FREE_BYTES = 32768

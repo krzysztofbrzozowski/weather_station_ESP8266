@@ -1,13 +1,24 @@
 # Weather station based on ESP8266 and BME280
 ## Repository Contents
 
-- **firmware/src/** - MicroPython files deployed to the ESP8266.
+- **firmware/micropython/src/** - MicroPython files deployed to the ESP8266.
+- **firmware/micropython/build/** - Generated MicroPython deployment files, ignored by Git.
+- **firmware/.settings** - Shared private configuration for both firmware implementations.
+- **firmware/arduino/** - Native C++ firmware using Arduino, BearSSL HTTPS and LittleFS;
+  see its [build and migration guide](firmware/arduino/README.md).
 - **local_dev/** - CPython launcher and runtime stubs for local development.
+
+The board currently runs Arduino. For settings, builds and uploads, use the
+[Arduino guide](firmware/arduino/README.md#updating-settings-and-firmware).
+The deployment instructions below describe MicroPython.
 
 ## Configuration
 
-Both the ESP8266 firmware and the local launcher read `firmware/src/.settings`.
-If it is missing, copy `firmware/src/.settings.example` to that path and edit it:
+Both implementations use the shared host configuration `firmware/.settings`.
+The local MicroPython launcher reads it directly; deployment copies it to
+`/.settings` on the device. Arduino's preparation tool converts it into
+`/config.json` for the device. Changing the host file alone does not update the board.
+If it is missing, copy `firmware/.settings.example` to that path and edit it:
 
 ```python
 API_url = 'Your API url'
@@ -44,7 +55,7 @@ Run from the repository root with Python 3 (standard library only):
 python3 local_dev/run.py
 ```
 
-The launcher executes `firmware/src/boot.py` and `firmware/src/main.py`, replacing
+The launcher executes `firmware/micropython/src/boot.py` and `firmware/micropython/src/main.py`, replacing
 hardware and HTTP modules with runtime stubs. It supplies fixed BME280 readings,
 an ADC value and a MAC address, simulates Wi-Fi and API responses, skips
 millisecond delays, and finishes when the firmware enters deep sleep.
@@ -69,7 +80,7 @@ sensor calibration, real API compatibility, or ESP8266 timing and power behavior
 
 ## Deployment
 
-Build the modules from `firmware/src/` on the computer and upload the resulting
+Build the modules from `firmware/micropython/src/` on the computer and upload the resulting
 `.mpy` files, `boot.py`, `main.py` and the private `.settings` to the ESP8266 root
 as shown below. Configure Wi-Fi and API settings in `.settings`.
 The `local_dev/` directory stays on the development
@@ -172,12 +183,12 @@ and [esptool flash commands](https://docs.espressif.com/projects/esptool/en/late
 
 ### 5. Prepare settings and the HTTP library
 
-Create `firmware/src/.settings` from `.settings.example` **only if it does not
+Create `firmware/.settings` from `.settings.example` **only if it does not
 already exist**, then enter the actual API and Wi-Fi settings in your editor.
 Keep an existing private configuration when updating.
 
 ```sh
-test -f firmware/src/.settings || cp firmware/src/.settings.example firmware/src/.settings
+test -f firmware/.settings || cp firmware/.settings.example firmware/.settings
 mpremote connect "$ESP_PORT" mip install requests
 mpremote connect "$ESP_PORT" exec "import requests; print('HTTP library available')"
 ```
@@ -200,7 +211,7 @@ python -m pip install 'mpy-cross==1.29.0.post2'
 python local_dev/build_firmware.py
 ```
 
-The build goes into `firmware/build/` (ignored by Git). Entry points `boot.py`
+The build goes into `firmware/micropython/build/` (ignored by Git). Entry points `boot.py`
 and `main.py` stay as Python source; the other modules become `.mpy` files.
 The builder does not copy private settings. See
 [MicroPython RAM and precompilation](https://docs.micropython.org/en/latest/reference/constrained.html#compilation-phase)
@@ -209,7 +220,7 @@ and [.mpy version compatibility](https://docs.micropython.org/en/latest/referenc
 Upload the build and explicitly include the hidden `.settings`:
 
 ```sh
-mpremote connect "$ESP_PORT" fs cp firmware/build/APIrequests.mpy firmware/build/BME280.mpy firmware/build/backup.mpy firmware/build/settings.mpy firmware/build/station_clock.mpy firmware/build/boot.py firmware/build/main.py firmware/src/.settings :/
+mpremote connect "$ESP_PORT" fs cp firmware/micropython/build/APIrequests.mpy firmware/micropython/build/BME280.mpy firmware/micropython/build/backup.mpy firmware/micropython/build/settings.mpy firmware/micropython/build/station_clock.mpy firmware/micropython/build/boot.py firmware/micropython/build/main.py firmware/.settings :/
 ```
 
 If the older `.py` modules from this project are already on the device, remove
@@ -228,7 +239,7 @@ mpremote connect "$ESP_PORT" fs ls
 ```
 
 The loader supports ESP8266 builds which omit `__file__`: it reads `/.settings`
-on the board and the source-adjacent `.settings` during local development.
+on the board and the shared `firmware/.settings` during local development.
 
 Do not upload `local_dev/`, its stubs, or `.settings.example`. Confirm the BME280
 is visible before starting the application; its default address should be `0x76`:
@@ -261,7 +272,7 @@ wakes and watchdog recovery skip this window. An already sleeping chip cannot
 receive Ctrl+C: use RST to wake it before trying to interrupt startup.
 
 This service window requires the updated `main.py` on the device. After building,
-upload `firmware/build/main.py` using the upload instructions above. This does
+upload `firmware/micropython/build/main.py` using the upload instructions above. This does
 not require erasing flash or reinstalling MicroPython.
 
 Keep the terminal at **115200 baud** for REPL and application messages. ESP8266
@@ -351,7 +362,7 @@ from the measurement interval instead of adding an arbitrary eight seconds.
 
 The station can also send readings to the `remote_surv_camera.nosync` server.
 Create a sensor in that server's Django Admin, register this station's MAC,
-assign readers and copy its per-device token. In `firmware/src/.settings`, set
+assign readers and copy its per-device token. In `firmware/.settings`, set
 `API_url = 'https://YOUR-SERVER/api/measurements'` (no trailing slash) and
 `AUTH_TOKEN` to that sensor's token. The endpoint accepts the existing
 BME280 payload and provides `/timesync` and `/timedelta/<seconds>` in UTC.
@@ -379,7 +390,7 @@ python3 local_dev/send_test_measurements.py --mac aa:bb:cc:dd:ee:ff
 
 Replace the MAC with the exact address registered in **Admin > Sensors**.
 The script reads `API_url` and `AUTH_TOKEN` from the private
-`firmware/src/.settings` file; Wi-Fi credentials are not used or displayed.
+`firmware/.settings` file; Wi-Fi credentials are not used or displayed.
 Use `--settings /path/to/.settings` for another configuration.
 
 By default, it sends **10 synthetic temperatures from 20.0 to 24.5 degrees C**,

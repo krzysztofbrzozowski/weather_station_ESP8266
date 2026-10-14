@@ -12,7 +12,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import build_opener, HTTPRedirectHandler, Request
 
-DEFAULT_SETTINGS = Path(__file__).resolve().parents[1] / 'firmware' / 'src' / '.settings'
+DEFAULT_SETTINGS = Path(__file__).resolve().parents[1] / 'firmware' / '.settings'
 
 
 class TestFailure(Exception):
@@ -29,7 +29,7 @@ def load_config(path):
     try:
         tree = ast.parse(Path(path).read_text())
     except (OSError, SyntaxError, UnicodeError):
-        raise TestFailure('Cannot read settings. Copy firmware/src/.settings.example to .settings and configure it.') from None
+        raise TestFailure('Cannot read settings. Copy firmware/.settings.example to .settings and configure it.') from None
     values = {}
     for node in tree.body:
         if not isinstance(node, ast.Assign) or len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
