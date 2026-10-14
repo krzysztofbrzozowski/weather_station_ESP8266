@@ -6,6 +6,7 @@ __pycache__/
 *.py[cod]
 .venv/
 local_dev/.state/
+firmware/build/
 .settings
 
 # Private configuration and device/runtime backups

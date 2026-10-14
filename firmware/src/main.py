@@ -1,7 +1,8 @@
 # Author: Krzysztof Brzozowski
-"""One bounded measurement cycle, followed by sleep even after errors."""
+"""One bounded measurement cycle, with REPL access after a manual reset."""
 import machine
 import time
+import gc
 
 
 def do_connect(wlan, ssid, password, feed, timeout_ms=8000):
@@ -39,13 +40,17 @@ def get_measurement(sensor, feed):
 
 
 def run_cycle(config, feed):
+    gc.collect()
     from APIrequests import APIRequests
+    gc.collect()
     from backup import Backup
+    gc.collect()
     from station_clock import StationClock
     from ubinascii import hexlify
     import network
 
     if not machine.Pin(13, machine.Pin.IN, machine.Pin.PULL_UP).value():
+        print('Charging input GPIO13 low: measurement cycle skipped')
         return
     clock = StationClock()
     wlan = network.WLAN(network.STA_IF)
@@ -68,6 +73,7 @@ def run_cycle(config, feed):
         measurement = get_measurement(sensor, feed)
         measurement.update({'mac_address': hexlify(wlan.config('mac'), ':').decode(),
                             'adc': round(machine.ADC(0).read() * 4.2 / 1024, 2)})
+        del sensor
         capture = clock.capture()
         data = measurement
         if queue is not None:
@@ -78,12 +84,16 @@ def run_cycle(config, feed):
         print('Measurement or backup write failed:', error)
 
     feed()
+    gc.collect()
+    print('Wi-Fi connection starting')
     if not do_connect(wlan, config['SSID'], config['PASSWD'], feed):
         print('Wi-Fi unavailable; queued measurements retained')
         return
+    print('Wi-Fi connected')
     try:
         feed()
         clock.synchronize(api.get_server_time())
+        print('Time sync OK')
     except Exception as error:
         print('Time sync failed:', error)
     # If storage fails, still attempt delivery of the current valid measurement.
@@ -101,6 +111,7 @@ def run_cycle(config, feed):
 
 
 def deep_sleep(milliseconds):
+    print('Deep sleep:', milliseconds, 'ms')
     try:
         rtc = machine.RTC()
         rtc.irq(trigger=rtc.ALARM0, wake=machine.DEEPSLEEP)
@@ -112,8 +123,10 @@ def deep_sleep(milliseconds):
 
 
 def main():
+    print('Reset cause:', machine.reset_cause())
     started = time.ticks_ms()
     interval_ms = 300000
+    interrupted = False
     try:
         watchdog = machine.WDT()
         from settings import load_settings
@@ -123,12 +136,33 @@ def main():
             print('Watchdog reset: sleeping before retry to avoid a reset loop')
             return
         run_cycle(config, watchdog.feed)
+    except KeyboardInterrupt:
+        # WDT cannot be disabled on ESP8266. Reset to offer the service window
+        # before enabling it again instead of leaving an unstable REPL session.
+        interrupted = True
+        print('Cycle interrupted; resetting. Press Ctrl+C in the service window.')
     except Exception as error:
         print('Measurement cycle failed:', error)
     finally:
-        elapsed = time.ticks_diff(time.ticks_ms(), started)
-        deep_sleep(max(1000, interval_ms - elapsed))
+        if interrupted:
+            machine.reset()
+        else:
+            elapsed = time.ticks_diff(time.ticks_ms(), started)
+            deep_sleep(max(1000, interval_ms - elapsed))
+
+
+def start():
+    # Timed wakes must stay short. Manual/power/software resets offer a window
+    # before main() enables the hardware watchdog or starts the sleep cycle.
+    if machine.reset_cause() not in (machine.DEEPSLEEP_RESET, machine.WDT_RESET):
+        try:
+            print('Service window: press Ctrl+C within 3 s to enter REPL')
+            time.sleep_ms(3000)
+        except KeyboardInterrupt:
+            print('REPL service mode; Ctrl+D restarts the firmware')
+            return
+    main()
 
 
 if __name__ == '__main__':
-    main()
+    start()

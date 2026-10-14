@@ -69,9 +69,9 @@ sensor calibration, real API compatibility, or ESP8266 timing and power behavior
 
 ## Deployment
 
-Copy the **contents** of `firmware/src/`, including the hidden `.settings` file
-and `settings.py`, to the ESP8266 filesystem root, so that `boot.py` and `main.py`
-are at the device root. Configure Wi-Fi and API settings in `.settings`.
+Build the modules from `firmware/src/` on the computer and upload the resulting
+`.mpy` files, `boot.py`, `main.py` and the private `.settings` to the ESP8266 root
+as shown below. Configure Wi-Fi and API settings in `.settings`.
 The `local_dev/` directory stays on the development
 computer and is not deployed to the board.
 
@@ -190,13 +190,45 @@ See [MicroPython package installation](https://docs.micropython.org/en/latest/re
 
 ### 6. Upload the station code
 
-Copy these files to the device root, explicitly including the hidden `.settings`:
+ESP8266 has limited RAM. Compiling all source modules on the device can fail
+with `MemoryError` even when the files fit in flash. Precompile the importable
+modules on the computer, using an `mpy-cross` release matching the board's
+MicroPython version. For **MicroPython 1.29.0**:
 
 ```sh
-mpremote connect "$ESP_PORT" fs cp firmware/src/APIrequests.py firmware/src/BME280.py firmware/src/backup.py firmware/src/settings.py firmware/src/station_clock.py firmware/src/boot.py firmware/src/.settings firmware/src/main.py :/
+python -m pip install 'mpy-cross==1.29.0.post2'
+python local_dev/build_firmware.py
+```
+
+The build goes into `firmware/build/` (ignored by Git). Entry points `boot.py`
+and `main.py` stay as Python source; the other modules become `.mpy` files.
+The builder does not copy private settings. See
+[MicroPython RAM and precompilation](https://docs.micropython.org/en/latest/reference/constrained.html#compilation-phase)
+and [.mpy version compatibility](https://docs.micropython.org/en/latest/reference/mpyfiles.html).
+
+Upload the build and explicitly include the hidden `.settings`:
+
+```sh
+mpremote connect "$ESP_PORT" fs cp firmware/build/APIrequests.mpy firmware/build/BME280.mpy firmware/build/backup.mpy firmware/build/settings.mpy firmware/build/station_clock.mpy firmware/build/boot.py firmware/build/main.py firmware/src/.settings :/
+```
+
+If the older `.py` modules from this project are already on the device, remove
+**those source copies only after their `.mpy` replacements upload successfully**:
+
+```sh
+mpremote connect "$ESP_PORT" fs rm :APIrequests.py :BME280.py :backup.py :settings.py :station_clock.py
+```
+
+Skip that removal command on a clean installation. Keep `main.py`, `boot.py`,
+`.settings`, `lib/` and measurement backups. Then verify the installed modules:
+
+```sh
 mpremote connect "$ESP_PORT" exec "import APIrequests, BME280, backup, settings, station_clock; settings.load_settings(); print('Firmware imports and settings OK')"
 mpremote connect "$ESP_PORT" fs ls
 ```
+
+The loader supports ESP8266 builds which omit `__file__`: it reads `/.settings`
+on the board and the source-adjacent `.settings` during local development.
 
 Do not upload `local_dev/`, its stubs, or `.settings.example`. Confirm the BME280
 is visible before starting the application; its default address should be `0x76`:
@@ -218,6 +250,54 @@ be connected to RST for timed wakeup. Press **Ctrl+]** to leave the terminal.
 For later source updates, repeat the upload step; erasing the flash is only
 needed for a clean interpreter installation and would delete pending readings.
 See the [mpremote manual](https://docs.micropython.org/en/latest/reference/mpremote.html).
+
+To enter REPL while the station is running, connect the terminal first, press the
+physical **RST** button, then press **Ctrl+C** when you see
+`Service window: press Ctrl+C within 3 s to enter REPL`. This leaves you at `>>>`
+before the hardware watchdog is enabled. **Ctrl+D** starts the firmware again.
+Interrupting an active measurement cycle instead requests a hardware reset;
+press **Ctrl+C** again during the service window to enter REPL. Timed deep-sleep
+wakes and watchdog recovery skip this window. An already sleeping chip cannot
+receive Ctrl+C: use RST to wake it before trying to interrupt startup.
+
+This service window requires the updated `main.py` on the device. After building,
+upload `firmware/build/main.py` using the upload instructions above. This does
+not require erasing flash or reinstalling MicroPython.
+
+Keep the terminal at **115200 baud** for REPL and application messages. ESP8266
+ROM startup messages normally use **74880 baud**, so some unreadable characters
+around reset are expected at the REPL speed; see the
+[Espressif boot log reference](https://docs.espressif.com/projects/esptool/en/latest/esp8266/advanced-topics/boot-mode-selection.html#boot-log).
+
+For the custom weather-station PCB, close **SJ2** to connect the `WAKE` net (GPIO16) to
+`RST`. An open SJ2 prevents timed deep-sleep wake unless another physical
+connection provides that path. A restart seen while opening/closing a USB serial
+terminal is not proof of timed wake: the adapter can toggle reset control lines.
+
+To check wake without reopening the port, use the host-side diagnostic (with the
+current `main.py` installed so it prints the reset cause):
+
+```sh
+python local_dev/check_device_sleep.py --port "$ESP_PORT" --seconds 10
+```
+
+It keeps the serial connection open throughout sleep and requires a delayed
+boot with `machine.DEEPSLEEP_RESET`. If the device is already asleep and cannot
+enter the REPL, reset it before starting the diagnostic. A timeout with the
+sleep command confirmed means automatic wake was not observed; do not interpret
+it as a successful test. This check does not measure sleep current.
+To catch a manual reset while keeping USB connected, start it with
+`--wait-for-reset 120`, then press RST while the script is waiting.
+
+If the firmware reports **HTTP 401**, register the physical device's MAC address
+on the server and use that sensor's token. To read the MAC without showing secrets:
+
+```sh
+mpremote connect "$ESP_PORT" exec "import network, ubinascii; print(ubinascii.hexlify(network.WLAN(network.STA_IF).config('mac'), ':').decode())"
+```
+
+Rejected authentication leaves measurements in the offline buffer. Once the
+MAC/token configuration is corrected, later cycles retry those records.
 
 ## Offline buffer and recovery
 
@@ -248,7 +328,10 @@ eviction. Uploads have both a request-count limit and an elapsed-time budget.
 
 RTC memory tracks clock continuity through deep sleep. Readings collected before
 the first successful time sync are converted using their captured RTC seconds,
-not their position in the queue. The conversion is also saved to disk so that an
+not their position in the queue. A small `.clock-session` marker ties RTC state
+to the filesystem: erasing/reflashing the filesystem invalidates retained RTC
+metadata, so the first measurement is synchronized again instead of trusting an
+old clock. The conversion is also saved to disk so that an
 interrupted upload can resume after power loss. If power is lost **before any
 successful time sync**, absolute times for that earlier RTC session cannot be
 reconstructed: those records are retained until buffer eviction and are not

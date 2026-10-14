@@ -245,5 +245,5 @@ class Backup:
             os.remove(self._path(name))
             self._sync()
             sent += 1
-            print('backup sent')
+            print('Queued measurement sent')
         return sent

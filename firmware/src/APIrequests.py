@@ -5,6 +5,7 @@ try:
 except ImportError:
     import requests as urequests
 import ujson
+import gc
 
 
 class APIError(OSError):
@@ -26,6 +27,7 @@ class APIRequests:
         self.timeout = timeout
 
     def _get_json(self, url):
+        gc.collect()
         response = urequests.get(url=url, timeout=self.timeout)
         try:
             if not 200 <= response.status_code < 300:
@@ -41,6 +43,7 @@ class APIRequests:
         return self._get_json('{}/{}'.format(self.API_url, url))
 
     def post(self, data):
+        gc.collect()
         response = urequests.post(self.API_url, json=data, headers=self.headers, timeout=self.timeout)
         try:
             self.request_code = response.status_code

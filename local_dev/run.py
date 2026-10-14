@@ -60,6 +60,8 @@ def main():
             runpy.run_path(str(firmware / "main.py"), run_name="__main__")
     except machine.DeepSleep as sleep:
         print("[local] Deep sleep: {} ms; simulation finished".format(sleep.milliseconds))
+    except machine.Reset:
+        print("[local] Hardware reset requested; run the launcher again to restart")
     finally:
         os.chdir(original_directory)
         sys.path.remove(str(firmware))

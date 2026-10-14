@@ -1,9 +1,11 @@
-"""Read the station's Python configuration next to this module."""
+"""Read configuration from the device root or next to this module on CPython."""
 
 
 def load_settings(path=None):
     if path is None:
-        directory = __file__.rsplit('/', 1)[0] if '/' in __file__ else '.'
+        # ESP8266 builds may omit __file__; deployed settings live at the root.
+        module_file = globals().get('__file__', '')
+        directory = module_file.rsplit('/', 1)[0] if '/' in module_file else ''
         path = directory + '/.settings'
 
     values = {}

@@ -115,3 +115,11 @@ class DeepSleep(Exception):
 
 def deepsleep(milliseconds=None):
     raise DeepSleep(RTC._alarm_ms if milliseconds is None else milliseconds)
+
+
+class Reset(Exception):
+    pass
+
+
+def reset():
+    raise Reset()

@@ -19,9 +19,26 @@ class StationClock:
                     or type(state.get('last')) is not int
                     or now < state.get('last', 0)):
                 raise ValueError('RTC continuity lost')
-        except (ValueError, TypeError, AttributeError):
+            # Flash erasure can leave RTC user memory intact. Require a matching
+            # filesystem marker before trusting a session from an earlier boot.
+            with open('.clock-session') as marker:
+                if marker.read(64) != state['id']:
+                    raise ValueError('Filesystem/RTC session mismatch')
+        except (OSError, ValueError, TypeError, AttributeError):
             state = {'version': 1, 'id': hexlify(os.urandom(8)).decode(),
                      'synced': False, 'offset': 0}
+            try:
+                with open('.clock-session.tmp', 'w') as marker:
+                    marker.write(state['id'])
+                if hasattr(os, 'sync'):
+                    os.sync()
+                os.rename('.clock-session.tmp', '.clock-session')
+                if hasattr(os, 'sync'):
+                    os.sync()
+            except OSError:
+                # Keep sampling/sending even if unrelated files fill the disk.
+                # This session will conservatively be treated as new next boot.
+                print('Clock continuity marker unavailable')
         self.state = state
         self._save()
 

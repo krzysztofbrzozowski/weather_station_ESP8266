@@ -86,7 +86,8 @@ class ReliabilityTest(unittest.TestCase):
             RTC=lambda: self.rtc, WDT=lambda: types.SimpleNamespace(feed=self.feed),
             Pin=machine.Pin, I2C=machine.I2C, ADC=machine.ADC,
             DEEPSLEEP=machine.DEEPSLEEP, deepsleep=self.sleep,
-            WDT_RESET=machine.WDT_RESET, reset_cause=lambda: machine.PWRON_RESET,
+            WDT_RESET=machine.WDT_RESET, DEEPSLEEP_RESET=machine.DEEPSLEEP_RESET,
+            reset_cause=lambda: machine.PWRON_RESET, reset=Mock(),
         )
         network.offline = False
         network.WLAN.enabled = network.WLAN.connected = True
@@ -373,6 +374,38 @@ class ReliabilityTest(unittest.TestCase):
         self.sleep.assert_called_once()
         self.assertEqual(self.rtc.alarm_ms, 300000)
 
+    def test_ctrl_c_in_service_window_starts_neither_watchdog_nor_cycle(self):
+        with patch.object(self.timer, 'sleep_ms', side_effect=KeyboardInterrupt), \
+                patch.object(self.hardware, 'WDT') as watchdog, \
+                patch.object(self.main_module, 'main') as cycle:
+            self.main_module.start()
+        watchdog.assert_not_called()
+        cycle.assert_not_called()
+        self.sleep.assert_not_called()
+        self.hardware.reset.assert_not_called()
+
+    def test_manual_reset_offers_service_window_then_runs_normally(self):
+        with patch.object(self.main_module, 'main') as cycle:
+            self.main_module.start()
+        self.assertEqual(self.timer.elapsed, 3000)
+        cycle.assert_called_once()
+
+    def test_sleep_and_watchdog_wakes_do_not_wait_for_service_input(self):
+        for cause in (machine.DEEPSLEEP_RESET, machine.WDT_RESET):
+            self.hardware.reset_cause = lambda: cause
+            with patch.object(self.main_module, 'main') as cycle:
+                self.main_module.start()
+            cycle.assert_called_once()
+        self.assertEqual(self.timer.elapsed, 0)
+
+    def test_ctrl_c_during_cycle_resets_for_service_instead_of_sleeping(self):
+        sys.modules['settings'] = types.SimpleNamespace(load_settings=lambda: self.config)
+        with patch.object(self.main_module, 'run_cycle', side_effect=KeyboardInterrupt):
+            self.main_module.main()
+        self.hardware.reset.assert_called_once()
+        self.sleep.assert_not_called()
+        self.http.post.assert_not_called()
+
     def test_watchdog_reset_sleeps_before_trying_network_again(self):
         self.hardware.reset_cause = lambda: machine.WDT_RESET
         with patch.object(self.main_module, 'run_cycle') as cycle:
@@ -425,6 +458,16 @@ class ReliabilityTest(unittest.TestCase):
         clock = self.clock_module.StationClock()
         self.assertFalse(clock.state['synced'])
         self.assertNotEqual(clock.state['id'], 'old')
+
+    def test_flash_erase_with_retained_rtc_memory_starts_new_session(self):
+        clock = self.clock_module.StationClock()
+        clock.synchronize([2026, 10, 14, 2, 12, 0, 0, 0])
+        old_id = clock.state['id']
+        Path('.clock-session').unlink()  # Filesystem erased, RTC still powered.
+        restored = self.clock_module.StationClock()
+        self.assertFalse(restored.state['synced'])
+        self.assertNotEqual(restored.state['id'], old_id)
+        self.assertNotIn('timestamp', restored.capture())
 
     def test_known_timestamps_can_upload_when_time_sync_is_temporarily_down(self):
         clock = self.clock_module.StationClock()
