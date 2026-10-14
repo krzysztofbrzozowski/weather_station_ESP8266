@@ -1,8 +1,18 @@
 API_url = 'Your API url'
-AUTH_TOKEN = 'Your API token'
+# Per-device tokens. One shared settings image can be uploaded to all boards.
+AUTH_TOKENS = {
+    'dc:4f:22:7c:3a:fa': 'Your-token-for-first-device',
+    'dc:4f:22:7c:3a:fc': 'Your-token-for-second-device',
+}
+# Legacy alternative for one device: AUTH_TOKEN = 'Your API token'
 BACKUP_FOLDER = 'backup_logs'
-SSID = 'Your SSID'
-PASSWD = 'Your PASSWD'
+WIFI_NETWORKS = [
+    {'SSID': 'Your-SSID-1', 'PASSWD': 'Your-password-1'},
+    {'SSID': 'Your-SSID-2', 'PASSWD': 'Your-password-2'},
+    {'SSID': 'Your-SSID-3', 'PASSWD': 'Your-password-3'},
+    {'SSID': 'Your-SSID-4', 'PASSWD': 'Your-password-4'},
+]
+# Legacy alternative: SSID = 'Your SSID'; PASSWD = 'Your PASSWD'
 
 # Optional; these defaults also apply when omitted from .settings.
 MEASUREMENT_INTERVAL_S = 1800
@@ -10,3 +20,4 @@ HTTP_TIMEOUT_S = 3
 BACKUP_MAX_RECORDS = 144
 BACKUP_MIN_FREE_BYTES = 32768
 BACKUP_MAX_SEND = 6
+WIFI_TIMEOUT_S = 12

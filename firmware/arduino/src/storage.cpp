@@ -1,4 +1,6 @@
 #include "station.h"
+#include "auth_config.h"
+#include "wifi_policy.h"
 #include <algorithm>
 #include <time.h>
 extern "C" {
@@ -35,12 +37,17 @@ String utcTimestamp(int64_t seconds) {
 }
 
 bool Config::load() {
-    StaticJsonDocument<2048> doc;
-    if (!readJson("/config.json", doc, 4096)) {
+    DynamicJsonDocument doc(auth::configCapacity);
+    const String mac = WiFi.macAddress();
+    File configuration = LittleFS.open("/config.json", "r");
+    const bool loaded = configuration && configuration.size() <= auth::maxConfigBytes &&
+        auth::readConfig(doc, configuration, mac.c_str());
+    configuration.close();
+    if (!loaded) {
         Serial.println(F("Cannot load /config.json; prepare and upload the filesystem first"));
         return false;
     }
-    for (const char* key : {"API_url", "AUTH_TOKEN", "SSID", "PASSWD", "BACKUP_FOLDER"}) {
+    for (const char* key : {"API_url", "BACKUP_FOLDER"}) {
         if (!doc[key].is<const char*>()) {
             Serial.printf("Missing/invalid setting: %s\n", key);
             return false;
@@ -48,15 +55,28 @@ bool Config::load() {
     }
     apiUrl = doc["API_url"].as<String>();
     while (apiUrl.endsWith("/")) apiUrl.remove(apiUrl.length() - 1);
-    token = doc["AUTH_TOKEN"].as<String>();
-    ssid = doc["SSID"].as<String>();
-    password = doc["PASSWD"].as<String>();
+    const auto selected = auth::selectFiltered(doc.as<JsonVariantConst>(), mac.c_str());
+    if (!selected.valid) {
+        Serial.println(F("Invalid AUTH_TOKENS map or AUTH_TOKEN"));
+        return false;
+    }
+    token = selected.token ? selected.token : "";
+    if (!selected.token) Serial.printf("No API token for MAC %s; uploads disabled; measurements will be queued\n", mac.c_str());
+    wifi::Profile profiles[wifi::maxProfiles];
+    networkCount = wifi::readProfiles(doc.as<JsonVariantConst>(), profiles);
+    if (networkCount == 0) {
+        Serial.println(F("Invalid WIFI_NETWORKS or SSID/PASSWD; configure 1-4 profiles"));
+        return false;
+    }
+    for (unsigned i = 0; i < networkCount; ++i) {
+        networks[i].ssid = profiles[i].ssid;
+        networks[i].password = profiles[i].password;
+    }
     folder = doc["BACKUP_FOLDER"].as<String>();
     if (!apiUrl.startsWith("https://") || apiUrl.indexOf('@') >= 0 || apiUrl.indexOf('?') >= 0 ||
         apiUrl.indexOf('#') >= 0 || apiUrl.indexOf('\r') >= 0 || apiUrl.indexOf('\n') >= 0 ||
-        token.length() == 0 || token.indexOf('\r') >= 0 || token.indexOf('\n') >= 0 ||
         folder.length() == 0 || folder.length() > 24 || folder == "." || folder == ".." ||
-        folder.indexOf('/') >= 0 || folder.indexOf('\\') >= 0 || ssid.length() == 0 || ssid.length() > 32 || password.length() > 64) {
+        folder.indexOf('/') >= 0 || folder.indexOf('\\') >= 0) {
         Serial.println(F("Invalid API URL, token, Wi-Fi or backup directory"));
         return false;
     }

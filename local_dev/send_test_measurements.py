@@ -25,7 +25,7 @@ class NoRedirects(HTTPRedirectHandler):
         return None
 
 
-def load_config(path):
+def load_config(path, mac=None):
     try:
         tree = ast.parse(Path(path).read_text())
     except (OSError, SyntaxError, UnicodeError):
@@ -39,14 +39,38 @@ def load_config(path):
         except (ValueError, TypeError, SyntaxError):
             raise TestFailure('Settings must contain simple literal assignments only.') from None
         name = node.targets[0].id
+        if name == 'AUTH_TOKENS' and not isinstance(value, dict):
+            raise TestFailure('AUTH_TOKENS must be a MAC/token dictionary.')
+        if name == 'WIFI_NETWORKS':
+            if not isinstance(value, list):
+                raise TestFailure('WIFI_NETWORKS must be a list.')
+            continue  # The host sender does not connect to these Wi-Fi networks.
         if name in ('MEASUREMENT_INTERVAL_S', 'HTTP_TIMEOUT_S', 'BACKUP_MAX_RECORDS',
-                    'BACKUP_MIN_FREE_BYTES', 'BACKUP_MAX_SEND') and type(value) is int:
+                    'BACKUP_MIN_FREE_BYTES', 'BACKUP_MAX_SEND', 'WIFI_TIMEOUT_S',
+                    'NTP_TIMEOUT_S', 'MAX_AWAKE_S') and type(value) is int:
             continue  # Firmware-only numeric controls are not used by this sender.
-        if not isinstance(value, str):
+        if not isinstance(value, str) and not (name == 'AUTH_TOKENS' and isinstance(value, dict)):
             raise TestFailure('Settings values must be strings.')
         values[node.targets[0].id] = value
     url = values.get('API_url', '').rstrip('/')
     token = values.get('AUTH_TOKEN', '')
+    if 'AUTH_TOKENS' in values:
+        mapping = values['AUTH_TOKENS']
+        if not 1 <= len(mapping) <= 100:
+            raise TestFailure('AUTH_TOKENS must contain 1-100 MAC/token entries.')
+        tokens = {}
+        for key, value in mapping.items():
+            if not isinstance(key, str):
+                raise TestFailure('Invalid MAC in AUTH_TOKENS.')
+            key = key.lower().replace('-', ':')
+            if not re.fullmatch(r'(?:[0-9a-f]{2}:){5}[0-9a-f]{2}', key):
+                raise TestFailure('Invalid MAC in AUTH_TOKENS.')
+            if key in tokens or not isinstance(value, str) or not 1 <= len(value) <= 256 or any(not 33 <= ord(c) <= 126 for c in value):
+                raise TestFailure('Duplicate MAC or invalid token in AUTH_TOKENS.')
+            tokens[key] = value
+        token = tokens.get(mac.lower().replace('-', ':') if isinstance(mac, str) else '', '')
+        if not token:
+            raise TestFailure('No API token configured for the requested MAC.')
     try:
         parsed = urlsplit(url)
         valid = parsed.scheme in ('http', 'https') and parsed.hostname and parsed.port != 0
@@ -150,7 +174,7 @@ def main(argv=None):
     args = parse_args(argv)
     confirmed = created = 0
     try:
-        url, token = load_config(args.settings)
+        url, token = load_config(args.settings, args.mac)
         opener = build_opener(NoRedirects())
         start = datetime.now(timezone.utc) if args.dry_run else server_time(opener, url, args.timeout)
         print('{} {} synthetic readings for MAC {}.'.format('Previewing' if args.dry_run else 'Sending', args.count, args.mac))

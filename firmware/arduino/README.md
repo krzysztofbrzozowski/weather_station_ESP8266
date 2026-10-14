@@ -83,39 +83,45 @@ POST them automatically. `station` runs the full measurement/sleep cycle.
 The flash helper defaults to `station` and prints the selected image and device
 MAC before writing. `tls_probe` must be selected explicitly for diagnostics.
 
-## Fresh installation and quick test
+## Build and flash with one script
 
-This installs the current settings with an empty measurement queue. It replaces
-the existing device firmware and filesystem. Run from the repository root:
-
-```sh
-source .venv/bin/activate
-export ESP_PORT=/dev/cu.usbserial-210
-python firmware/arduino/tools/prepare.py stage --replace
-pio run -d firmware/arduino -e tls_probe -e station
-pio run -d firmware/arduino -e tls_probe -t buildfs
-python firmware/arduino/tools/flash.py write --port "$ESP_PORT" \
-  --environment tls_probe --with-filesystem --manual-reset --connect-attempts 0
-```
-
-Keep SJ2 open while programming and press RST when the tool is waiting. The
-helper holds the programming line through DTR, writes at 115200 baud in 1 KiB
-packets, verifies flash and captures startup. Automatic reset depends on the
-adapter wiring; omit `--manual-reset` only when your adapter supports it.
-Automatic bootloader entry and RTS startup were verified on this adapter with
-SJ2 open; no physical RST is needed in that configuration.
-
-After `HTTPS probe PASS`, open the service console and issue `run` for a real
-sensor POST, and `selftest` for isolated LittleFS queue checks. Then upload the
-full station application without replacing its filesystem:
+Use the repository's `platformio.sh`; it selects the local `.venv` and
+PlatformIO core directory automatically. From the repository root:
 
 ```sh
-python firmware/arduino/tools/flash.py write --port "$ESP_PORT" \
-  --environment station --manual-reset --connect-attempts 0
+./platformio.sh --build
+./platformio.sh --flash --port /dev/cu.usbserial-210 --cycles 3
 ```
 
-Close SJ2 again for timed wake. The optional migration section below is only
-needed when existing measurements should be retained.
+`--build` validates `firmware/.settings`, regenerates the private filesystem,
+builds **station** and `littlefs.bin`, and checks that the filesystem contains
+exactly the current settings. It reports the interval, profile/token counts and
+image SHA256 hashes, without printing credentials. A manifest is saved in the
+ignored `.pio/build/station/deploy-manifest.json`.
+
+`--flash` runs that same build first, verifies the manifest and writes both
+images. Any failed preparation/build/check stops the script; stale images are
+never used as a fallback. It then verifies a real measurement upload and sleep.
+`--cycles 3` additionally checks two timed wakes with reset cause 5 and another
+successful upload after each wake, keeping the serial port continuously open.
+The default is one cycle. UART evidence is saved in
+`.pio/build/station/first-boot.log`; failed runtime verification returns an error.
+
+**Default flashing replaces the filesystem, including pending measurements.**
+For an update retaining device settings and the queue:
+
+```sh
+./platformio.sh --flash --code-only --port /dev/cu.usbserial-210
+```
+
+Close other serial terminals before flashing. On this user's setup, use BOOT
+when the tool prints `Connecting`; release BOOT once the flasher stub starts.
+SJ2 can stay closed if programming works with it closed, and must be closed for
+timed wake. Open it only if it interferes with reset on your hardware. If manual
+bootloader entry is needed, use `--manual-reset` and the board's BOOT/RST controls.
+`ESP_PORT` can supply the port instead of `--port`. No shell activation or other
+exports are required. The script can also be called by absolute path from
+another working directory.
 
 ## Private configuration
 
@@ -128,12 +134,78 @@ pio run -d firmware/arduino -e tls_probe -t buildfs
 ```
 
 `stage` generates the ignored `firmware/arduino/data` directory. It accepts
-strings, integers and comments, without executing Python. Use `--replace` to
+strings, integers, MAC/token dictionaries, Wi-Fi profile lists and comments,
+without executing Python. Use `--replace` to
 explicitly regenerate an existing host staging directory. The API must use
 HTTPS, with no embedded credentials, query string or fragment. Wi-Fi credentials
 and the API token are stored in the private filesystem image, not in C++ source.
 
-The existing five required settings and queue controls retain their names.
+API URL, Wi-Fi, backup directory and queue controls retain their names. Tokens
+can be configured in a shared map:
+
+```python
+AUTH_TOKENS = {
+    'dc:4f:22:7c:3a:fa': 'Your-token-for-first-device',
+    'dc:4f:22:7c:3a:fc': 'Your-token-for-second-device',
+}
+```
+
+The generated filesystem contains the complete map; each board selects its own
+token from its Wi-Fi station MAC at startup. The same firmware and filesystem
+image can therefore be flashed onto all boards. MACs accept uppercase/lowercase
+and colon/hyphen separators. Maps must have 1–100 entries, with no duplicate MACs
+after normalization; tokens must contain 1–256 printable ASCII characters without
+spaces. The complete configuration is limited to 32768 bytes.
+The Arduino loader streams the JSON from flash and retains only general
+settings and this board's token in a 4 KiB JSON document. Other devices' tokens
+are skipped during parsing; increasing the registry to 100 entries does not
+allocate the full registry in RAM. The preparation tool validates and
+canonicalizes all entries before generating the image.
+
+Unknown MACs print `No API token for MAC ...; uploads disabled`, keep collecting
+and queueing measurements and follow the normal sleep interval. No POST is sent
+until a matching token is configured. `status` reports whether a token is
+configured, without exposing it. Other devices' tokens are not used as fallback.
+
+The legacy `AUTH_TOKEN = 'Your API token'` format remains supported when the map
+is absent. When `AUTH_TOKENS` exists, it takes precedence over `AUTH_TOKEN`.
+After adding/changing a map, use the code-and-settings upload procedure below;
+older firmware only understands the legacy single token.
+
+### Multiple Wi-Fi networks
+
+Configure 1–4 profiles in the shared `.settings`:
+
+```python
+WIFI_NETWORKS = [
+    {'SSID': 'Home-WiFi', 'PASSWD': 'Your-home-password'},
+    {'SSID': 'Office-WiFi', 'PASSWD': 'Your-office-password'},
+    {'SSID': 'Workshop-WiFi', 'PASSWD': 'Your-workshop-password'},
+    {'SSID': 'Phone-Hotspot', 'PASSWD': 'Your-hotspot-password'},
+]
+```
+
+On first boot the station scans for configured visible SSIDs and attempts them
+in list order. The successful profile is saved in `/.wifi.json` and is tried
+first on later wakes and after power loss. If it disappears or authentication
+fails, the station scans again and attempts other visible profiles. A failed
+scan falls back to direct attempts. Failed connections never replace the saved
+preference; it is written only when the successful profile changes.
+
+Each SSID accepts 1–32 UTF-8 bytes and each password 0–64 bytes (empty means an
+open network). Exact duplicate profiles are rejected; the same SSID with
+different passwords is allowed. The cache contains an index and a fingerprint,
+without plaintext passwords. Editing/reordering profiles invalidates the cache.
+
+`WIFI_TIMEOUT_S` limits each connection attempt. Scanning is limited to 5
+seconds; the whole discovery/connection phase is limited to the smaller of
+`5 + WIFI_TIMEOUT_S * profile_count` seconds and half of `MAX_AWAKE_S`.
+Remaining time is shared between pending visible profiles so early failures
+cannot consume the entire budget before the final profile is tried.
+When none succeeds, measurements remain queued and discovery retries next cycle.
+The legacy `SSID`/`PASSWD` pair remains supported; a present `WIFI_NETWORKS` list
+takes precedence. One profile can be attempted directly without a scan.
+
 Additional Arduino settings, with defaults:
 
 ```python
@@ -158,9 +230,14 @@ the MicroPython local launcher. For example:
 
 ```python
 API_url = 'https://your-server.example/api/measurements'
-AUTH_TOKEN = 'Your API token'
-SSID = 'Your SSID'
-PASSWD = 'Your PASSWD'
+AUTH_TOKENS = {
+    'dc:4f:22:7c:3a:fa': 'Your-token-for-first-device',
+    'dc:4f:22:7c:3a:fc': 'Your-token-for-second-device',
+}
+WIFI_NETWORKS = [
+    {'SSID': 'Home-WiFi', 'PASSWD': 'Your-home-password'},
+    {'SSID': 'Office-WiFi', 'PASSWD': 'Your-office-password'},
+]
 BACKUP_FOLDER = 'backup_logs'
 MEASUREMENT_INTERVAL_S = 30
 ```
@@ -174,21 +251,11 @@ after sending. Editing this file does not change an already running device.
 To rebuild and install both code and settings, run from the repository root:
 
 ```sh
-source .venv/bin/activate
-export ESP_PORT=/dev/cu.usbserial-210
-export PLATFORMIO_CORE_DIR="$PWD/firmware/arduino/.pio-core"
-python firmware/arduino/tools/prepare.py stage --replace
-pio run -d firmware/arduino -e station
-pio run -d firmware/arduino -e station -t buildfs
-python firmware/arduino/tools/flash.py write --port "$ESP_PORT" \
-  --environment station --with-filesystem
+./platformio.sh --flash --port /dev/cu.usbserial-210 --cycles 3
 ```
 
-Close other serial terminals and open SJ2 before programming. On the tested
-adapter, reset is automatic. If automatic entry fails, add
-`--manual-reset --connect-attempts 0` and press RST when prompted. Close SJ2
-after programming to enable timed wake. If it has already fallen asleep with
-SJ2 open and missed its wake, press RST to start it again.
+The script rebuilds settings and both images before opening the port. Use BOOT
+as described above if automatic entry needs help. Keep SJ2 closed for timed wake.
 
 **Uploading the filesystem replaces its contents, including pending
 measurements.** Use this procedure for a fresh configuration when losing the
@@ -199,8 +266,7 @@ For code changes with existing device settings and queue, omit filesystem
 preparation and upload:
 
 ```sh
-pio run -d firmware/arduino -e station
-python firmware/arduino/tools/flash.py write --port "$ESP_PORT" --environment station
+./platformio.sh --flash --code-only --port /dev/cu.usbserial-210
 ```
 
 `prepare.py stage` also accepts `--settings /path/to/.settings` if a separate
@@ -253,7 +319,7 @@ rejection markers. File contents and original timestamps are preserved. It uses
 the exported device's `BACKUP_FOLDER` as the source and the current local setting
 as the destination.
 
-## Flash and check HTTPS first
+## Optional: TLS diagnostics and manual flashing
 
 With the backup verified and the migrated filesystem prepared, enter the ROM
 bootloader and upload both images. These offsets apply to the pinned 4 MiB
@@ -353,10 +419,28 @@ python -m unittest discover -s firmware/arduino/tests -p 'test_*.py'
 clang++ -std=c++11 -Wall -Wextra -Werror -Ifirmware/arduino/include \
   firmware/arduino/tests/policy_test.cpp -o /tmp/weather-station-policy-test
 /tmp/weather-station-policy-test
+clang++ -std=c++11 -Wall -Wextra -Werror -Ifirmware/arduino/include \
+  -Ifirmware/arduino/.pio/libdeps/station/ArduinoJson/src \
+  firmware/arduino/tests/auth_test.cpp -o /tmp/weather-station-auth-test
+/tmp/weather-station-auth-test
+clang++ -std=c++11 -Wall -Wextra -Werror -Ifirmware/arduino/include \
+  -Ifirmware/arduino/.pio/libdeps/station/ArduinoJson/src \
+  firmware/arduino/tests/wifi_test.cpp -o /tmp/weather-station-wifi-test
+/tmp/weather-station-wifi-test
 ```
 
 Host checks cover date validation, HTTP acknowledgement/rejection policy,
 interval arithmetic, RTC checksum changes, private configuration validation,
-export checksums and lossless migration/extraction. They do not establish real
-TLS memory use, I2C operation, power consumption or long-term hardware stability;
+export checksums and lossless migration/extraction.
+MAC/token selection is also tested against the same C++ implementation used on
+the board, including missing MACs, map precedence and invalid/duplicate entries.
+The production streaming reader is also exercised with 100 distinct
+256-character tokens, selecting the first, middle and last entry and an unknown
+MAC within the same fixed JSON memory budget.
+Wi-Fi tests cover profile validation, preferred-network reuse, discovery,
+password failures, fallback, preference invalidation and bounded offline waits.
+The C++ ordering policy used by the board is tested with simulated connections;
+physical roaming between access points still requires hardware verification.
+These checks do not establish real TLS memory use, I2C operation, power
+consumption or long-term hardware stability;
 those require testing on the board.

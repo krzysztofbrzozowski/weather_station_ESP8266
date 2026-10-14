@@ -39,6 +39,68 @@ class MigrationTest(unittest.TestCase):
         self.assertEqual(values['PASSWD'], "quote'and\\slash")
         self.assertEqual(values['MEASUREMENT_INTERVAL_S'], 1800)
 
+    def test_token_map_stages_all_devices_without_legacy_fallback(self):
+        with self.settings.open('a') as f:
+            f.write("AUTH_TOKENS = {'DC-4F-22-7C-3A-FA': 'unit-first', 'dc:4f:22:7c:3a:fc': 'unit-second'}\n")
+        prepare.stage(self.settings, output=self.output)
+        config = json.loads((self.output / 'config.json').read_text())
+        self.assertEqual(config['AUTH_TOKENS'], {'dc:4f:22:7c:3a:fa': 'unit-first', 'dc:4f:22:7c:3a:fc': 'unit-second'})
+        self.assertNotIn('AUTH_TOKEN', config)
+        self.settings.write_text(self.settings.read_text().replace("AUTH_TOKEN = 'test-only'\n", ''))
+        self.assertEqual(prepare.read_settings(self.settings)['AUTH_TOKENS'], config['AUTH_TOKENS'])
+
+    def test_bad_maps_are_rejected_before_replacing_staged_configuration(self):
+        original = self.settings.read_text()
+        prepare.stage(self.settings, output=self.output)
+        before = (self.output / 'config.json').read_bytes()
+        for mapping in ({}, [], None, 'unit-secret', {'invalid': 'unit-secret'},
+                        {'dc:4f:22:7c:3a:fa': ''}, {'dc:4f:22:7c:3a:fa': True},
+                        {'dc:4f:22:7c:3a:fa': 'unit-secret\r\nInjected'},
+                        {'dc:4f:22:7c:3a:fa': 'unit-secret', 'DC-4F-22-7C-3A-FA': 'unit-other'},
+                        {'02:00:00:00:00:%02x' % n: 'unit-secret' for n in range(101)}):
+            self.settings.write_text(original + 'AUTH_TOKENS = ' + repr(mapping) + '\n')
+            with self.assertRaises(ValueError) as raised:
+                prepare.stage(self.settings, replace=True, output=self.output)
+            self.assertNotIn('unit-secret', str(raised.exception))
+            self.assertEqual((self.output / 'config.json').read_bytes(), before)
+
+    def test_one_hundred_maximum_length_tokens_fit_the_device_image(self):
+        mapping = {'02:00:00:00:00:%02x' % n: 'unit-%03d-' % n + 'x' * 247 for n in range(100)}
+        self.assertTrue(all(len(token) == 256 for token in mapping.values()))
+        with self.settings.open('a') as f:
+            f.write('AUTH_TOKENS = ' + repr(mapping) + '\n')
+        prepare.stage(self.settings, output=self.output)
+        raw = (self.output / 'config.json').read_bytes()
+        config = json.loads(raw)
+        self.assertEqual(config['AUTH_TOKENS_COUNT'], 100)
+        self.assertEqual(config['AUTH_TOKENS'], mapping)
+        self.assertLessEqual(len(raw), 32768)
+        self.assertNotIn('AUTH_TOKEN', config)
+
+    def test_four_wifi_profiles_stage_without_legacy_credentials(self):
+        profiles = [{'SSID': 'unit-%d' % n, 'PASSWD': 'unit-password-%d' % n} for n in range(4)]
+        self.settings.write_text(self.settings.read_text().replace("SSID = 'test-wifi'\nPASSWD = 'test-password'\n", '') +
+                                 'WIFI_NETWORKS = ' + repr(profiles))
+        prepare.stage(self.settings, output=self.output)
+        config = json.loads((self.output / 'config.json').read_text())
+        self.assertEqual(config['WIFI_NETWORKS'], profiles)
+        self.assertNotIn('SSID', config)
+        self.assertNotIn('PASSWD', config)
+
+    def test_invalid_wifi_profiles_preserve_staged_configuration(self):
+        original = self.settings.read_text()
+        prepare.stage(self.settings, output=self.output)
+        before = (self.output / 'config.json').read_bytes()
+        for profiles in ([], {}, [{'SSID': 'x', 'PASSWD': 'unit-secret'}] * 5,
+                         [{'SSID': '', 'PASSWD': 'unit-secret'}], [{'SSID': 'ą' * 17, 'PASSWD': 'unit-secret'}],
+                         [{'SSID': 'x', 'PASSWD': 'x' * 65}], [{'SSID': 'bad\0ssid', 'PASSWD': 'unit-secret'}],
+                         [{'SSID': 'x', 'PASSWD': True}], [{'SSID': 'x', 'PASSWD': 'unit-secret'}] * 2):
+            self.settings.write_text(original + 'WIFI_NETWORKS = ' + repr(profiles))
+            with self.assertRaises(ValueError) as raised:
+                prepare.stage(self.settings, replace=True, output=self.output)
+            self.assertNotIn('unit-secret', str(raised.exception))
+            self.assertEqual((self.output / 'config.json').read_bytes(), before)
+
     def test_executable_configuration_is_rejected_without_running_it(self):
         sentinel = self.root / 'must-not-exist'
         with self.settings.open('a') as f:

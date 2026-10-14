@@ -58,6 +58,38 @@ class SendMeasurementsTest(unittest.TestCase):
         self.assertEqual(len(rows), 10)
         self.assertNotIn('private-test-token', output.getvalue())
 
+    def test_map_selects_requested_mac_and_unknown_mac_sends_nothing(self):
+        with self.config.open('a') as file:
+            file.write("\nAUTH_TOKENS = {'AA-BB-CC-DD-EE-FF': 'unit-first', 'dc:4f:22:7c:3a:fc': 'unit-second'}\n")
+        self.assertEqual(sender.load_config(self.config, 'aa:bb:cc:dd:ee:ff')[1], 'unit-first')
+        self.assertEqual(sender.load_config(self.config, 'DC:4F:22:7C:3A:FC')[1], 'unit-second')
+        output = io.StringIO()
+        with patch.object(sender, 'server_time') as clock, patch.object(sender, 'request_json') as http, redirect_stderr(output):
+            self.assertEqual(sender.main(self.argv + ['--mac', 'dc:4f:22:7c:3c:0d']), 1)
+        clock.assert_not_called()
+        http.assert_not_called()
+        self.assertNotIn('unit-first', output.getvalue())
+        self.assertNotIn('private-test-token', output.getvalue())
+
+    def test_malformed_map_returns_a_safe_error(self):
+        original = self.config.read_text()
+        for mapping in ('unit-secret', {}, {'invalid': 'unit-secret'},
+                        {'aa:bb:cc:dd:ee:ff': 'unit-secret\r\nInjected'}):
+            self.config.write_text(original + '\nAUTH_TOKENS = ' + repr(mapping))
+            with self.assertRaises(sender.TestFailure) as raised:
+                sender.load_config(self.config, 'aa:bb:cc:dd:ee:ff')
+            self.assertNotIn('unit-secret', str(raised.exception))
+
+    def test_one_hundred_devices_selects_the_last_token(self):
+        mapping = {'02:00:00:00:00:%02x' % n: 'unit-%03d-' % n + 'x' * 247 for n in range(100)}
+        with self.config.open('a') as f:
+            f.write('\nAUTH_TOKENS = ' + repr(mapping))
+        self.assertEqual(sender.load_config(self.config, '02:00:00:00:00:63')[1], mapping['02:00:00:00:00:63'])
+        mapping['02:00:00:00:00:64'] = 'unit-extra'
+        self.config.write_text("API_url='http://localhost/api/measurements'\nAUTH_TOKENS=" + repr(mapping))
+        with self.assertRaises(sender.TestFailure):
+            sender.load_config(self.config, '02:00:00:00:00:63')
+
     def test_false_success_and_mismatched_timestamps_rejected(self):
         reading = next(sender.measurements('aa:bb:cc:dd:ee:ff', 1, self.now, 20, .5, 300))
         for status, response in [(202, {}), (201, {'id': 1, 'created': False}),
@@ -78,6 +110,11 @@ class SendMeasurementsTest(unittest.TestCase):
     def test_firmware_numeric_settings_do_not_break_the_sender(self):
         with self.config.open('a') as file:
             file.write('\nMEASUREMENT_INTERVAL_S=300\nHTTP_TIMEOUT_S=3\nBACKUP_MAX_RECORDS=144\nBACKUP_MIN_FREE_BYTES=32768\nBACKUP_MAX_SEND=6\n')
+        self.assertEqual(sender.load_config(self.config), ('http://localhost/api/measurements', 'private-test-token'))
+
+    def test_shared_wifi_profile_list_does_not_break_host_sender(self):
+        with self.config.open('a') as file:
+            file.write("\nWIFI_NETWORKS = [{'SSID': 'home', 'PASSWD': 'unit-password'}, {'SSID': 'open', 'PASSWD': ''}]\n")
         self.assertEqual(sender.load_config(self.config), ('http://localhost/api/measurements', 'private-test-token'))
 
     def test_http_error_does_not_print_response_body_or_token(self):

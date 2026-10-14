@@ -37,19 +37,7 @@ void sleepFor(uint32_t milliseconds) {
 }
 
 bool connectWifi() {
-    if (WiFi.status() == WL_CONNECTED) return true;
-    WiFi.persistent(false);
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(config.ssid.c_str(), config.password.c_str());
-    Serial.println(F("Wi-Fi connection starting"));
-    uint32_t start = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - start < config.wifiTimeout * 1000) delay(50);
-    if (WiFi.status() != WL_CONNECTED) {
-        Serial.println(F("Wi-Fi unavailable; queued measurements retained"));
-        return false;
-    }
-    Serial.printf("Wi-Fi connected; free heap: %u\n", ESP.getFreeHeap());
-    return true;
+    return connectStationWifi(config);
 }
 
 bool networkTime() {
@@ -189,6 +177,7 @@ void status() {
     Serial.printf("Configuration: %s; filesystem: %s; RTC clock: %s; interval: %u s\n",
         configured ? "OK" : "unavailable", mounted ? "mounted" : "unavailable",
         clockReady && stationClock.synced() ? "synchronized" : "unsynchronized", config.interval);
+    if (configured) Serial.println(config.token.length() ? F("API token: configured") : F("API token: missing for this MAC; uploads disabled"));
     if (configured && mounted) Queue(config).status();
     if (clockReady && stationClock.synced()) Serial.printf("RTC UTC: %s\n", utcTimestamp(stationClock.now()).c_str());
 }

@@ -30,6 +30,10 @@ public:
 }
 
 int Api::request(bool post, JsonVariantConst data, JsonDocument* reply) {
+    if (post && config_.token.length() == 0) {
+        Serial.println(F("POST skipped: no API token for this MAC; measurement retained"));
+        return -107;
+    }
     if (WiFi.status() != WL_CONNECTED) return -100;
     if (time(nullptr) < policy::epoch(2020, 1, 1, 0, 0, 0)) {
         Serial.println(F("HTTPS deferred: current UTC time is required to validate certificates"));

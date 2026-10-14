@@ -37,6 +37,12 @@ class APIRequestsTest(unittest.TestCase):
     def test_base_url_is_normalized(self):
         self.assertEqual(self.api.API_url, 'https://server/api/measurements')
 
+    def test_missing_token_never_sends_a_post(self):
+        api = self.module.APIRequests('https://server/api/measurements', '')
+        with self.assertRaises(OSError):
+            api.post({'temperature': 21})
+        self.http.post.assert_not_called()
+
     def test_success_and_idempotent_replay_close_response(self):
         for status in [200, 201]:
             with self.subTest(status=status):

@@ -36,7 +36,7 @@ def literal_settings(path):
 
 def read_settings(path):
     values = literal_settings(path)
-    required = ('API_url', 'AUTH_TOKEN', 'SSID', 'PASSWD', 'BACKUP_FOLDER')
+    required = ('API_url', 'BACKUP_FOLDER')
     for key in required:
         if not isinstance(values.get(key), str):
             raise ValueError('Missing/invalid setting: ' + key)
@@ -44,14 +44,53 @@ def read_settings(path):
     if (url.scheme != 'https' or not url.hostname or url.username or url.password or url.query or url.fragment
             or any(c in values['API_url'] for c in '\r\n')):
         raise ValueError('API_url must be HTTPS without credentials, query or fragment')
-    if not values['AUTH_TOKEN'] or any(c in values['AUTH_TOKEN'] for c in '\r\n'):
-        raise ValueError('Invalid AUTH_TOKEN')
+    def valid_token(token):
+        return isinstance(token, str) and 1 <= len(token) <= 256 and all(33 <= ord(c) <= 126 for c in token)
+    auth = {}
+    if 'AUTH_TOKENS' in values:
+        mapping = values['AUTH_TOKENS']
+        if not isinstance(mapping, dict) or not 1 <= len(mapping) <= 100:
+            raise ValueError('AUTH_TOKENS must contain 1-100 MAC/token entries')
+        tokens = {}
+        for mac, token in mapping.items():
+            if not isinstance(mac, str):
+                raise ValueError('Invalid MAC in AUTH_TOKENS')
+            mac = mac.lower().replace('-', ':')
+            if (len(mac) != 17 or any(c != ':' if i % 3 == 2 else c not in '0123456789abcdef' for i, c in enumerate(mac))):
+                raise ValueError('Invalid MAC in AUTH_TOKENS')
+            if mac in tokens or not valid_token(token):
+                raise ValueError('Duplicate MAC or invalid token in AUTH_TOKENS')
+            tokens[mac] = token
+        auth['AUTH_TOKENS'] = tokens
+        auth['AUTH_TOKENS_COUNT'] = len(tokens)
+    else:
+        if not valid_token(values.get('AUTH_TOKEN')):
+            raise ValueError('Invalid AUTH_TOKEN')
+        auth['AUTH_TOKEN'] = values['AUTH_TOKEN']
     folder = values['BACKUP_FOLDER']
     if not folder or len(folder) > 24 or folder in ('.', '..') or '/' in folder or '\\' in folder:
         raise ValueError('Invalid BACKUP_FOLDER')
-    if not 1 <= len(values['SSID'].encode()) <= 32 or len(values['PASSWD'].encode()) > 64:
-        raise ValueError('Invalid Wi-Fi settings length')
+    profiles = values.get('WIFI_NETWORKS') if 'WIFI_NETWORKS' in values else [
+        {'SSID': values.get('SSID'), 'PASSWD': values.get('PASSWD')}]
+    if not isinstance(profiles, list) or not 1 <= len(profiles) <= 4:
+        raise ValueError('WIFI_NETWORKS must contain 1-4 SSID/PASSWD profiles')
+    seen = set()
+    for profile in profiles:
+        if (not isinstance(profile, dict) or set(profile) != {'SSID', 'PASSWD'} or
+            not isinstance(profile['SSID'], str) or not isinstance(profile['PASSWD'], str) or
+            not 1 <= len(profile['SSID'].encode()) <= 32 or len(profile['PASSWD'].encode()) > 64 or
+            '\0' in profile['SSID'] or '\0' in profile['PASSWD']):
+            raise ValueError('Invalid Wi-Fi profile; SSID must have 1-32 bytes, PASSWD 0-64 bytes')
+        identity = (profile['SSID'], profile['PASSWD'])
+        if identity in seen:
+            raise ValueError('Duplicate Wi-Fi profile')
+        seen.add(identity)
     result = {key: values[key] for key in required}
+    if 'WIFI_NETWORKS' in values:
+        result['WIFI_NETWORKS'] = profiles
+    else:
+        result.update(profiles[0])
+    result.update(auth)
     for key, (default, low, high) in DEFAULTS.items():
         value = values.get(key, default)
         if type(value) is not int or not low <= value <= high:
@@ -214,6 +253,9 @@ def stage(settings, exported=None, replace=False, output=None):
     if target.exists() and not replace:
         raise ValueError('Staged data already exists; use --replace to regenerate the host image')
     manifest = verify_export(exported) if exported is not None else None
+    config_json = json.dumps(config, indent=2, ensure_ascii=False) + '\n'
+    if len(config_json.encode()) > 32768:
+        raise ValueError('Configuration exceeds the device limit of 32768 bytes')
     ca = PROJECT / 'certs' / 'isrg-roots.pem'
     if not ca.exists():
         raise ValueError('Missing public CA bundle')
@@ -222,7 +264,7 @@ def stage(settings, exported=None, replace=False, output=None):
         shutil.rmtree(target)
     target.mkdir(parents=True, mode=0o700)
     config_path = target / 'config.json'
-    config_path.write_text(json.dumps(config, indent=2, ensure_ascii=False) + '\n')
+    config_path.write_text(config_json)
     config_path.chmod(0o600)
     shutil.copyfile(ca, target / 'ca.pem')
     migrated = 0

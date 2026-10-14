@@ -7,13 +7,17 @@
 #include "record_policy.h"
 
 struct Config {
-    String apiUrl, token, ssid, password, folder;
+    struct Network { String ssid, password; } networks[4];
+    unsigned networkCount = 0;
+    String apiUrl, token, folder;
     uint32_t interval = 300, timeout = 3, maxRecords = 144, reserveBytes = 32768, maxSend = 6;
     uint32_t wifiTimeout = 12, ntpTimeout = 15, maxAwake = 90;
     static constexpr uint32_t handshakeTimeout = 15; // Fixed by Arduino core 3.1.2.
     String ntpServer = "time.cloudflare.com", caFile = "/ca.pem";
     bool load();
 };
+
+bool connectStationWifi(const Config& config);
 
 bool readJson(const String& path, JsonDocument& doc, size_t maxBytes = 2048);
 bool writeJson(const String& path, const JsonDocument& doc);

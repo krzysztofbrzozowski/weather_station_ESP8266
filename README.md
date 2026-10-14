@@ -7,6 +7,7 @@
 - **firmware/arduino/** - Native C++ firmware using Arduino, BearSSL HTTPS and LittleFS;
   see its [build and migration guide](firmware/arduino/README.md).
 - **local_dev/** - CPython launcher and runtime stubs for local development.
+- **platformio.sh** - Build or flash Arduino with current shared settings and image verification.
 
 The board currently runs Arduino. For settings, builds and uploads, use the
 [Arduino guide](firmware/arduino/README.md#updating-settings-and-firmware).
@@ -22,14 +23,46 @@ If it is missing, copy `firmware/.settings.example` to that path and edit it:
 
 ```python
 API_url = 'Your API url'
-AUTH_TOKEN = 'Your API token'
+AUTH_TOKENS = {
+    'dc:4f:22:7c:3a:fa': 'Your-token-for-first-device',
+    'dc:4f:22:7c:3a:fc': 'Your-token-for-second-device',
+}
 BACKUP_FOLDER = 'backup_logs'
-SSID = 'Your SSID'
-PASSWD = 'Your PASSWD'
+WIFI_NETWORKS = [
+    {'SSID': 'Home-WiFi', 'PASSWD': 'Your-home-password'},
+    {'SSID': 'Office-WiFi', 'PASSWD': 'Your-office-password'},
+]
 ```
 
-The file uses Python assignments and is ignored by Git. These five settings must
-be strings. Optional numeric controls and their defaults are:
+The file uses Python assignments and is ignored by Git. `API_url` and
+`BACKUP_FOLDER` are strings. `WIFI_NETWORKS` holds 1–4 SSID/password profiles;
+the legacy `SSID` and `PASSWD` strings still work when the list is absent.
+The list takes precedence over legacy credentials. Each SSID is 1–32 UTF-8
+bytes, each password 0–64 bytes; an empty password selects an open network.
+Exact duplicate profiles are rejected; the same SSID with different passwords
+is allowed.
+
+On first use, multi-network firmware scans for configured visible SSIDs and
+tries them in list order. It saves the successful profile in `/.wifi.json`,
+which survives deep sleep and power loss. Later cycles try that profile first;
+if connection fails they scan again and try the other visible profiles. A scan
+failure falls back to direct attempts. Only a changed successful preference is
+written to flash. Changing credentials/order invalidates the saved preference.
+If all networks fail, measurements stay queued and discovery retries next cycle.
+
+`AUTH_TOKENS` maps Wi-Fi station MAC
+addresses to their API tokens. Each board selects its token at startup; the same
+settings file/image can be used on all boards. MACs are case insensitive and
+accept colons or hyphens. Use 1–100 entries and 1–256 printable ASCII characters
+per token, without spaces. Duplicate MACs after normalization are rejected.
+
+An unknown MAC leaves uploads disabled while measurements remain queued and the
+normal sleep cycle continues. The console reports the missing MAC, without
+printing any tokens. The legacy single-device `AUTH_TOKEN = 'Your API token'`
+format still works when `AUTH_TOKENS` is absent. A present map takes precedence;
+there is no fallback to another device's token.
+
+Optional numeric controls and their defaults are:
 
 ```python
 MEASUREMENT_INTERVAL_S = 300
@@ -220,21 +253,21 @@ and [.mpy version compatibility](https://docs.micropython.org/en/latest/referenc
 Upload the build and explicitly include the hidden `.settings`:
 
 ```sh
-mpremote connect "$ESP_PORT" fs cp firmware/micropython/build/APIrequests.mpy firmware/micropython/build/BME280.mpy firmware/micropython/build/backup.mpy firmware/micropython/build/settings.mpy firmware/micropython/build/station_clock.mpy firmware/micropython/build/boot.py firmware/micropython/build/main.py firmware/.settings :/
+mpremote connect "$ESP_PORT" fs cp firmware/micropython/build/APIrequests.mpy firmware/micropython/build/BME280.mpy firmware/micropython/build/backup.mpy firmware/micropython/build/settings.mpy firmware/micropython/build/station_clock.mpy firmware/micropython/build/station_wifi.mpy firmware/micropython/build/boot.py firmware/micropython/build/main.py firmware/.settings :/
 ```
 
 If the older `.py` modules from this project are already on the device, remove
 **those source copies only after their `.mpy` replacements upload successfully**:
 
 ```sh
-mpremote connect "$ESP_PORT" fs rm :APIrequests.py :BME280.py :backup.py :settings.py :station_clock.py
+mpremote connect "$ESP_PORT" fs rm :APIrequests.py :BME280.py :backup.py :settings.py :station_clock.py :station_wifi.py
 ```
 
 Skip that removal command on a clean installation. Keep `main.py`, `boot.py`,
 `.settings`, `lib/` and measurement backups. Then verify the installed modules:
 
 ```sh
-mpremote connect "$ESP_PORT" exec "import APIrequests, BME280, backup, settings, station_clock; settings.load_settings(); print('Firmware imports and settings OK')"
+mpremote connect "$ESP_PORT" exec "import APIrequests, BME280, backup, settings, station_clock, station_wifi; settings.load_settings(); print('Firmware imports and settings OK')"
 mpremote connect "$ESP_PORT" fs ls
 ```
 
@@ -349,7 +382,9 @@ reconstructed: those records are retained until buffer eviction and are not
 uploaded with invented dates. Previously timestamped readings remain sendable.
 Legacy date-named `.txt` backups with valid timestamps are also supported.
 
-Wi-Fi connects immediately and has an eight-second wait limit. HTTP uses the
+Single-network MicroPython connects immediately and defaults to an eight-second
+wait. `WIFI_TIMEOUT_S` changes the wait per profile (1–30 seconds); multi-network
+discovery and attempts share a 45-second overall limit. HTTP uses the
 configured socket timeout; DNS and a stuck native operation are also covered by
 the hardware watchdog, which resets the board if execution stops progressing.
 After a watchdog reset the next boot sleeps for one interval before retrying,
@@ -364,7 +399,8 @@ The station can also send readings to the `remote_surv_camera.nosync` server.
 Create a sensor in that server's Django Admin, register this station's MAC,
 assign readers and copy its per-device token. In `firmware/.settings`, set
 `API_url = 'https://YOUR-SERVER/api/measurements'` (no trailing slash) and
-`AUTH_TOKEN` to that sensor's token. The endpoint accepts the existing
+the corresponding `AUTH_TOKENS` entry (or legacy `AUTH_TOKEN`) to that sensor's
+token. The endpoint accepts the existing
 BME280 payload and provides `/timesync` and `/timedelta/<seconds>` in UTC.
 See `remote_surv_camera.nosync/docs/climate.md` for setup and API details.
 
@@ -389,7 +425,8 @@ python3 local_dev/send_test_measurements.py --mac aa:bb:cc:dd:ee:ff
 ```
 
 Replace the MAC with the exact address registered in **Admin > Sensors**.
-The script reads `API_url` and `AUTH_TOKEN` from the private
+The script reads `API_url` and selects the token for `--mac` from `AUTH_TOKENS`
+(or reads the legacy `AUTH_TOKEN`) in the private
 `firmware/.settings` file; Wi-Fi credentials are not used or displayed.
 Use `--settings /path/to/.settings` for another configuration.
 

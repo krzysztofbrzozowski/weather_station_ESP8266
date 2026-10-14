@@ -22,6 +22,11 @@ def do_connect(wlan, ssid, password, feed, timeout_ms=8000):
     return wlan.isconnected()
 
 
+def do_connect_profiles(wlan, profiles, feed, timeout_ms=8000):
+    from station_wifi import connect_profiles
+    return connect_profiles(wlan, profiles, feed, do_connect, time, timeout_ms)
+
+
 def get_measurement(sensor, feed):
     readings = {'temperature': [], 'humidity': [], 'pressure': []}
     bounds = {'temperature': (-40, 85), 'humidity': (0, 100), 'pressure': (300, 1100)}
@@ -86,7 +91,10 @@ def run_cycle(config, feed):
     feed()
     gc.collect()
     print('Wi-Fi connection starting')
-    if not do_connect(wlan, config['SSID'], config['PASSWD'], feed):
+    connected = (do_connect_profiles(wlan, config['WIFI_NETWORKS'], feed, config.get('WIFI_TIMEOUT_S', 8) * 1000)
+                 if 'WIFI_NETWORKS' in config else
+                 do_connect(wlan, config['SSID'], config['PASSWD'], feed, config.get('WIFI_TIMEOUT_S', 8) * 1000))
+    if not connected:
         print('Wi-Fi unavailable; queued measurements retained')
         return
     print('Wi-Fi connected')

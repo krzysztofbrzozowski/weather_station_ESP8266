@@ -43,6 +43,8 @@ class APIRequests:
         return self._get_json('{}/{}'.format(self.API_url, url))
 
     def post(self, data):
+        if not self.auth_token:
+            raise OSError('POST skipped: no API token for this MAC; measurement retained')
         gc.collect()
         response = urequests.post(self.API_url, json=data, headers=self.headers, timeout=self.timeout)
         try:

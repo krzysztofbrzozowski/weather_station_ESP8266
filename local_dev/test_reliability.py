@@ -105,6 +105,7 @@ class ReliabilityTest(unittest.TestCase):
         self.clock_module = load_module('review_clock', FIRMWARE / 'station_clock.py')
         self.clock_module.time = self.timer
         sys.modules['station_clock'] = self.clock_module
+        sys.modules['station_wifi'] = load_module('review_wifi', FIRMWARE / 'station_wifi.py')
         self.main_module = load_module('review_main', FIRMWARE / 'main.py')
         self.main_module.time = self.timer
         self.config = {'API_url': 'http://example.invalid/api', 'AUTH_TOKEN': 'test',
@@ -417,6 +418,21 @@ class ReliabilityTest(unittest.TestCase):
         network.offline = True
         self.run_main()
         self.assertEqual(self.rtc.alarm_ms, 291600)
+        self.assertEqual(len(list(Path('backups').glob('q*.json'))), 1)
+
+    def test_unknown_mac_token_preserves_measurement_and_sleeps(self):
+        self.config['AUTH_TOKEN'] = ''
+        self.run_main()
+        self.http.post.assert_not_called()
+        self.assertEqual(len(list(Path('backups').glob('q*.json'))), 1)
+
+    def test_all_wifi_profiles_unavailable_retains_measurement_and_sleeps(self):
+        self.config['WIFI_NETWORKS'] = [{'SSID': 'home', 'PASSWD': 'unit-home'},
+                                        {'SSID': 'office', 'PASSWD': 'unit-office'}]
+        network.WLAN.connected = False
+        with patch.object(network.WLAN, 'available_networks', {}):
+            self.run_main()
+        self.http.post.assert_not_called()
         self.assertEqual(len(list(Path('backups').glob('q*.json'))), 1)
 
     def test_storage_failure_still_sends_current_measurement_and_sleeps(self):

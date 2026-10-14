@@ -10,6 +10,7 @@ from esptool.targets.esp8266 import ESP8266ROM
 from esptool.cmds import write_flash
 
 from prepare import PROJECT, verify_export
+from device_cycles import CycleVerifier
 
 FLASH_SIZE = 0x400000
 FS_OFFSET = 0x300000
@@ -55,7 +56,7 @@ def connect(port_name, baud, manual, attempts):
     port.rts = False
     port.open()
     if manual:
-        print('GPIO0 programming line held active. Press RST; keep SJ2 open while programming.', flush=True)
+        print('GPIO0 programming line held active. Enter the bootloader with your board BOOT/RST controls.', flush=True)
     loader = ESP8266ROM(port)
     loader.connect(mode='no-reset' if manual else 'default-reset', attempts=attempts)
     loader.ESP_RAM_BLOCK = 1024
@@ -105,12 +106,16 @@ def main():
     parser.add_argument('--export', type=Path)
     parser.add_argument('--manual-reset', action='store_true')
     parser.add_argument('--service', action='store_true', help='Request service mode on first boot after writing')
+    parser.add_argument('--verify-cycles', type=int, default=0, help='Verify 1-5 real measurement/sleep cycles after writing station')
     parser.add_argument('--baud', type=int, default=115200,
                         help='Initial/current loader baud (115200 after physical reset)')
     parser.add_argument('--transfer-baud', type=int, default=115200)
     parser.add_argument('--connect-attempts', type=int, default=20,
                         help='Use 0 to wait until Ctrl+C during manual bootloader entry')
     args = parser.parse_args()
+    if not 0 <= args.verify_cycles <= 5 or (args.verify_cycles and
+            (args.action != 'write' or args.environment != 'station' or args.service)):
+        parser.error('--verify-cycles requires writing station without --service, and accepts 1-5')
     metadata = None
     build = PROJECT / '.pio/build' / args.environment
     if args.action in ('backup', 'restore') and args.backup is None:
@@ -159,20 +164,38 @@ def main():
         esp.hard_reset()
         port.baudrate = 115200
         port.timeout = 0.1
-        deadline = time.monotonic() + 65
+        expected = json.loads((PROJECT / 'data/config.json').read_text()) if args.action == 'write' and args.with_filesystem else {}
+        interval = expected.get('MEASUREMENT_INTERVAL_S')
+        verifier = CycleVerifier(args.verify_cycles, interval) if args.verify_cycles else None
+        awake_budget = max(65, expected.get('MAX_AWAKE_S', 90) + 15)
+        deadline = time.monotonic() + (awake_budget if verifier else 65)
         log = bytearray()
         interrupted = False
-        while time.monotonic() < deadline:
-            data = port.read(port.in_waiting or 1)
-            log.extend(data)
-            if data:
-                print(data.decode(errors='replace'), end='', flush=True)
-            if args.service and not interrupted and (b'Service window:' in log or b'Weather station:' in log):
-                port.write(b'\x03')
-                interrupted = True
-            if b'station> ' in log or b'Deep sleep:' in log:
-                break
-        (build / 'first-boot.log').write_bytes(log)
+        try:
+            while time.monotonic() < deadline:
+                data = port.read(port.in_waiting or 1)
+                log.extend(data)
+                if data:
+                    print(data.decode(errors='replace'), end='', flush=True)
+                if verifier:
+                    previous_cycles = verifier.completed
+                    verifier.feed(data, time.monotonic())
+                    verifier.check_timeout(time.monotonic())
+                    if verifier.done:
+                        print('PASS: verified {} measurement/sleep cycles.'.format(verifier.completed), flush=True)
+                        break
+                    if verifier.completed != previous_cycles:
+                        deadline = time.monotonic() + verifier.sleep_ms / 1000 + awake_budget
+                else:
+                    if args.service and not interrupted and (b'Service window:' in log or b'Weather station:' in log):
+                        port.write(b'\x03')
+                        interrupted = True
+                    if b'station> ' in log or b'Deep sleep:' in log:
+                        break
+            if verifier and not verifier.done:
+                raise RuntimeError('Startup/cycle verification timed out; inspect first-boot.log')
+        finally:
+            (build / 'first-boot.log').write_bytes(log)
     finally:
         if port is not None:
             port.rts = False
