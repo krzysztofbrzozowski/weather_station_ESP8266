@@ -14,6 +14,14 @@ int main() {
             "2026-01-01T00:00:00X", "2026-01-01T00:00:00Zextra", "202x-01-01T00:00:00Z", ""}) assert(parseTimestamp(bad) == -1);
     assert(parseTimestamp(nullptr) == -1);
     assert(accepted(200) && accepted(201));
+    // An accepted backlog item cannot hide failure of this cycle's sample.
+    assert(acknowledgesRecord(201, "q0000000002.json", "q0000000002.json"));
+    assert(acknowledgesRecord(200, "q0000000002.json", "q0000000002.json"));
+    assert(!acknowledgesRecord(201, "q0000000001.json", "q0000000002.json"));
+    assert(!acknowledgesRecord(500, "q0000000002.json", "q0000000002.json"));
+    assert(!acknowledgesRecord(201, "q0000000002.json", ""));
+    assert(!acknowledgesRecord(201, nullptr, "q0000000002.json"));
+    assert(!acknowledgesRecord(201, "q0000000002.json", nullptr));
     for (int code : {202, 204, 301, 400, 401, 409, 422, 429, 500, -40, -1}) assert(!accepted(code));
     assert(permanentRejection(400) && permanentRejection(409) && permanentRejection(422));
     for (int code : {200, 201, 401, 403, 429, 500, -1}) assert(!permanentRejection(code));

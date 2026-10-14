@@ -100,12 +100,16 @@ image SHA256 hashes, without printing credentials. A manifest is saved in the
 ignored `.pio/build/station/deploy-manifest.json`.
 
 `--flash` runs that same build first, verifies the manifest and writes both
-images. Any failed preparation/build/check stops the script; stale images are
+images, then rechecks both device hashes after the last write. The helper uses
+esptool's standard flash initialization/reset before accessing the chip, also
+when reconnecting after deep sleep. Any failed preparation/build/check stops the script; stale images are
 never used as a fallback. It then verifies a real measurement upload and sleep.
 `--cycles 3` additionally checks two timed wakes with reset cause 5 and another
 successful upload after each wake, keeping the serial port continuously open.
 The default is one cycle. UART evidence is saved in
-`.pio/build/station/first-boot.log`; failed runtime verification returns an error.
+`.pio/build/station/first-boot.log`; an exception, boot failure or failed runtime
+verification returns an error. A successful short check does not establish
+long-term stability.
 
 **Default flashing replaces the filesystem, including pending measurements.**
 For an update retaining device settings and the queue:
@@ -116,6 +120,8 @@ For an update retaining device settings and the queue:
 
 Close other serial terminals before flashing. On this user's setup, use BOOT
 when the tool prints `Connecting`; release BOOT once the flasher stub starts.
+Connection waits until bootloader entry or Ctrl+C, so it does not expire while
+the board's buttons are being operated.
 SJ2 can stay closed if programming works with it closed, and must be closed for
 timed wake. Open it only if it interferes with reset on your hardware. If manual
 bootloader entry is needed, use `--manual-reset` and the board's BOOT/RST controls.
@@ -367,6 +373,7 @@ command console rather than the Python REPL.
 | `https` | Validate HTTPS and fetch API time, without POST |
 | `run` | Take a real measurement, queue it and attempt upload |
 | `selftest` | Check circular eviction and interrupted-write recovery in a separate temporary directory; no test POSTs |
+| `ledtest` | Identify module LED wiring: 3 short flashes on GPIO2, then 2 long flashes on GPIO1/TX; UART is disabled during the patterns |
 | `sleep 10` | Sleep for 10 seconds, then boot into the installed application |
 | `reboot` | Restart the application |
 
@@ -375,6 +382,36 @@ checking timed wake; adapter reset-line changes can otherwise imitate a wake.
 Confirm elapsed sleep, reset cause 5, successful upload and the next sleep.
 
 ## Hardware checks
+
+The blue module LED (`LED_BUILTIN`, GPIO2 on the selected ESP-12E/nodemcu
+variant) is active LOW and is held HIGH/off from application startup. The
+application explicitly uninstalls the SDK Wi-Fi status LED timer before
+claiming the pin and reasserts the off state around Wi-Fi connection, before
+indication and before sleep. This prevents an installed SDK LED handler from
+competing with the application's indication; it does not establish that this
+handler caused a particular observed flash. Successful
+measurement delivery (HTTP 200/201) has no LED indication. If the current
+cycle's measurement is not acknowledged, the LED flashes once for 20 ms before
+sleep; failed Wi-Fi attempts do not each cause a separate flash. An acknowledged
+older queued record does not count as delivery of the current sample. A cycle
+intentionally skipped while charging does not flash. UART logs remain available.
+Other module variants can wire the blue LED to UART TX; those hardware LEDs and
+ROM startup flashes are outside this GPIO2 indication. The board definition
+alone does not prove the wiring of a particular ESP module. To identify it:
+
+```sh
+./platformio.sh --flash --led-test
+```
+
+This uploads the current `station` build and filesystem, automatically enters
+service mode and runs `ledtest` without sending measurements or sleeping. Watch
+the blue LED after the test announcement: **three short flashes** identify
+GPIO2; after a pause, **two long flashes** identify GPIO1/TX. UART is disabled
+while either pin is pulsed, so serial logs cannot imitate these patterns. The
+test leaves the device awake in service mode; press RST to resume measurements.
+`--led-test` cannot be combined with `--cycles`. The regular cycle log also
+reports whether the current sample was acknowledged and whether the software
+requested an LED pulse (`pulse 0 ms` means no software indication).
 
 With SJ2 open, this helper resets into service mode, verifies HTTPS, exercises
 the isolated queue and uploads a real BME280 measurement:
@@ -387,8 +424,9 @@ python firmware/arduino/tools/check_device.py --port "$ESP_PORT" \
 On the target PCB, the 2026-10-14 check confirmed validated TLS 1.2, API time
 GET HTTP 200, BME280 measurement POST HTTP 201, an empty queue after upload,
 oldest-record eviction and recovery of complete/incomplete temporary files.
-Around 45 KiB heap remained after the upload. The installed private settings
-currently select a 1800-second (30-minute) measurement interval.
+Around 45 KiB heap remained after the upload. During that earlier check, the
+private settings selected a 1800-second (30-minute) measurement interval; use
+the current build summary and UART log to check today's settings.
 
 With SJ2 closed and serial continuously open, `sleep 10` produced an automatic
 wake after 10.19 seconds with reset cause 5. The following cycle completed API

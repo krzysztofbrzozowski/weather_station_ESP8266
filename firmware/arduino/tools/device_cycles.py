@@ -20,6 +20,8 @@ class CycleVerifier:
             raw, _, rest = self.pending.partition(b'\n')
             self.pending[:] = rest
             line = raw.decode(errors='replace').strip()
+            if re.search(r'Fatal exception|Exception \(\d+\)|Soft WDT reset|Hardware Watchdog|panic:|ets_main\.c', line):
+                raise RuntimeError('Device crashed or could not boot: {}; inspect first-boot.log'.format(line))
             if 'Weather station:' in line:
                 self.accepted = False
                 self.reason = None

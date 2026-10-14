@@ -236,13 +236,16 @@ bool Queue::write(const String& name, const JsonDocument& doc, bool adding) {
     return bytes <= 2048 && makeSpace(bytes, name, adding) && writeJson(path(name), doc);
 }
 
-bool Queue::add(const JsonDocument& record) {
+bool Queue::add(const JsonDocument& record, String* storedName) {
+    if (storedName) *storedName = String();
     uint64_t sequence = 0;
     for (const auto& name : files()) if (name.startsWith("q")) sequence = std::max(sequence, strtoull(name.c_str() + 1, nullptr, 10));
     if (sequence >= 999999999999999999ULL) return false;
     char name[32];
     snprintf(name, sizeof(name), "q%010llu.json", static_cast<unsigned long long>(sequence + 1));
-    return write(String(name), record, true);
+    if (!write(String(name), record, true)) return false;
+    if (storedName) *storedName = name;
+    return true;
 }
 
 bool Queue::stamp(JsonDocument& record, JsonVariantConst map) {
@@ -276,7 +279,8 @@ bool Queue::rememberClock(StationClock& clock) {
     return write(".clock.json", current);
 }
 
-unsigned Queue::send(Api& api, StationClock& clock, uint32_t deadline) {
+unsigned Queue::send(Api& api, StationClock& clock, uint32_t deadline,
+                     const String& currentRecord, bool* currentAccepted) {
     if (!rememberClock(clock)) {
         Serial.println(F("Clock mapping could not be committed; queue retained"));
         return 0;
@@ -302,6 +306,8 @@ unsigned Queue::send(Api& api, StationClock& clock, uint32_t deadline) {
         }
         ++attempted;
         const int status = api.post(record["data"].as<JsonVariantConst>());
+        if (currentAccepted && policy::acknowledgesRecord(status, name.c_str(), currentRecord.c_str()))
+            *currentAccepted = true;
         if (policy::accepted(status)) {
             if (!LittleFS.remove(path(name))) {
                 Serial.println(F("Server accepted measurement; removal failed, safe retry retained"));

@@ -83,6 +83,21 @@ class ShellTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn('--with-filesystem', self.calls()[-1]['args'])
 
+    def test_led_test_requests_service_test_without_measurement_cycles(self):
+        result = self.run_script('--flash', '--led-test')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = self.calls()[-1]['args']
+        self.assertIn('--led-test', args)
+        self.assertNotIn('--verify-cycles', args)
+        self.assertIn('--with-filesystem', args)
+
+    def test_led_test_cannot_be_mixed_with_build_or_cycles(self):
+        for args in [('--build', '--led-test'), ('--flash', '--led-test', '--cycles', '3')]:
+            with self.subTest(args=args):
+                result = self.run_script(*args)
+                self.assertEqual(result.returncode, 2)
+                self.assertFalse(self.log.exists())
+
 
 class ManifestTest(unittest.TestCase):
     def setUp(self):
@@ -160,6 +175,63 @@ class CyclesTest(unittest.TestCase):
         self.first_cycle(verifier)
         with self.assertRaises(RuntimeError):
             verifier.check_timeout(35)
+
+    def test_crash_and_boot_failure_are_reported_immediately(self):
+        for message in (b'Fatal exception (0):\n', b'Exception (28):\n',
+                        b'Soft WDT reset\n', b'ets_main.c \n'):
+            verifier = CycleVerifier(3, 30)
+            self.first_cycle(verifier)
+            with self.subTest(message=message), self.assertRaisesRegex(RuntimeError, 'crashed or could not boot'):
+                verifier.feed(message[:5], 24.2)
+                verifier.feed(message[5:], 24.3)
+
+
+class FlashVerificationTests(unittest.TestCase):
+    def test_flash_is_initialized_before_checking_chip_or_reading(self):
+        from flash import connect, FLASH_SIZE
+        from unittest.mock import Mock, patch
+        events = []
+        port, loader, stub = Mock(), Mock(), Mock()
+        loader.run_stub.return_value = stub
+        stub.flash_id.side_effect = lambda **kwargs: events.append('id') or 0x1640ef
+        stub.flash_set_parameters.side_effect = lambda size: events.append(('size', size))
+        with patch('flash.serial.serial_for_url', return_value=port), \
+             patch('flash.ESP8266ROM', return_value=loader), \
+             patch('flash.attach_flash', side_effect=lambda esp: events.append('attach')):
+            self.assertEqual(connect('test-port', 115200, False, 20), (port, stub))
+        self.assertEqual(events, ['attach', ('size', FLASH_SIZE), 'id'])
+        stub.flash_id.assert_called_once_with(cache=False)
+
+    def test_initialization_failure_closes_port_and_releases_reset_lines(self):
+        from flash import connect
+        from unittest.mock import Mock, patch
+        port, loader = Mock(), Mock()
+        with patch('flash.serial.serial_for_url', return_value=port), \
+             patch('flash.ESP8266ROM', return_value=loader), \
+             patch('flash.attach_flash', side_effect=ValueError('flash unavailable')):
+            with self.assertRaisesRegex(ValueError, 'flash unavailable'):
+                connect('test-port', 115200, True, 0)
+        port.close.assert_called_once()
+        self.assertFalse(port.dtr)
+        self.assertFalse(port.rts)
+
+    def test_later_filesystem_write_cannot_silently_damage_application(self):
+        from flash import verify_written_images
+        import hashlib
+
+        class Device:
+            def __init__(self, memory):
+                self.memory = memory
+            def flash_md5sum(self, offset, size):
+                return hashlib.md5(self.memory[offset][:size]).hexdigest()
+
+        app = b'\xe9\x02\x00\x00' + b'firmware' * 100
+        programmed = app[:2] + b'\x02\x40' + app[4:]
+        fs = b'filesystem' * 100
+        images = [(0, app), (0x300000, fs)]
+        verify_written_images(Device({0: programmed, 0x300000: fs}), images)
+        with self.assertRaisesRegex(ValueError, '0x000000'):
+            verify_written_images(Device({0: b'\xff' * len(app), 0x300000: fs}), images)
 
 
 if __name__ == '__main__':

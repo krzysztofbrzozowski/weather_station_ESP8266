@@ -67,8 +67,9 @@ public:
     explicit Queue(const Config& config) : config_(config) {}
     bool begin();
     std::vector<String> files() const;
-    bool add(const JsonDocument& record);
+    bool add(const JsonDocument& record, String* storedName = nullptr);
     bool persistClock(StationClock& clock) { return rememberClock(clock); }
-    unsigned send(Api& api, StationClock& clock, uint32_t deadline);
+    unsigned send(Api& api, StationClock& clock, uint32_t deadline,
+                  const String& currentRecord = String(), bool* currentAccepted = nullptr);
     void status() const;
 };

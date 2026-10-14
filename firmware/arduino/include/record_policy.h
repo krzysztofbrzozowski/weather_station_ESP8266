@@ -36,6 +36,9 @@ inline int64_t parseTimestamp(const char* text) {
     return epoch(parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]);
 }
 inline bool accepted(int status) { return status == 200 || status == 201; }
+inline bool acknowledgesRecord(int status, const char* sent, const char* current) {
+    return accepted(status) && sent && current && *current && strcmp(sent, current) == 0;
+}
 inline bool permanentRejection(int status) { return status == 400 || status == 409 || status == 422; }
 inline uint32_t sleepRemainder(uint32_t interval, uint32_t awake) {
     return awake >= interval ? 1000 : interval - awake < 1000 ? 1000 : interval - awake;

@@ -17,6 +17,27 @@ Ticker cycleGuard;
 String command;
 constexpr uint32_t guardMagic = 0x47554152;
 
+void initializeStatusLed() {
+    // SDK Wi-Fi status uses its own timer and can bypass digitalWrite().
+    // Release it before claiming the LED pin for application-only indication.
+    wifi_status_led_uninstall();
+    // ESP-12E's selected nodemcu variant: blue LED on GPIO2, active LOW.
+    // Set the output latch first so switching to OUTPUT cannot light the LED.
+    digitalWrite(LED_BUILTIN, HIGH);
+    pinMode(LED_BUILTIN, OUTPUT);
+}
+
+void indicateUnsentMeasurement(bool delivered) {
+    initializeStatusLed();
+    Serial.printf("Measurement LED: %s; GPIO%u; pulse %u ms\n",
+        delivered ? "current sample acknowledged" : "current sample NOT acknowledged",
+        LED_BUILTIN, delivered ? 0 : 20);
+    if (delivered) return;
+    digitalWrite(LED_BUILTIN, LOW);
+    delay(20);
+    digitalWrite(LED_BUILTIN, HIGH);
+}
+
 void armGuard() {
     cycleGuard.once(config.maxAwake, []() {
         uint32_t marker = guardMagic;
@@ -31,13 +52,17 @@ void sleepFor(uint32_t milliseconds) {
     Serial.printf("Deep sleep: %u ms\n", milliseconds);
     Serial.flush();
     if (mounted) LittleFS.end();
+    initializeStatusLed();
     ESP.deepSleep(static_cast<uint64_t>(milliseconds) * 1000, WAKE_RF_DEFAULT);
     delay(100);
     ESP.restart();
 }
 
 bool connectWifi() {
-    return connectStationWifi(config);
+    initializeStatusLed();
+    const bool connected = connectStationWifi(config);
+    initializeStatusLed();
+    return connected;
 }
 
 bool networkTime() {
@@ -118,7 +143,11 @@ void probeHttps() {
 }
 
 void runCycle() {
-    if (!configured || !clockReady) { Serial.println(F("Cycle unavailable: configuration or RTC/storage initialization failed")); return; }
+    if (!configured || !clockReady) {
+        Serial.println(F("Cycle unavailable: configuration or RTC/storage initialization failed"));
+        indicateUnsentMeasurement(false);
+        return;
+    }
     cycleStarted = millis();
     armGuard();
     pinMode(13, INPUT_PULLUP);
@@ -133,8 +162,9 @@ void runCycle() {
     if (!storageReady) Serial.println(F("Queue storage unavailable; attempting current measurement directly"));
     DynamicJsonDocument record(1024);
     const bool valid = measure(record);
-    bool queued = false;
-    if (valid && storageReady) queued = queue.add(record);
+    bool queued = false, delivered = false;
+    String currentRecord;
+    if (valid && storageReady) queued = queue.add(record, &currentRecord);
     if (queued) Serial.println(F("Measurement queued"));
     else if (valid) Serial.println(F("Measurement could not be queued"));
     if (connectWifi() && networkTime()) {
@@ -150,7 +180,8 @@ void runCycle() {
             // to old samples from a session whose clock continuity was lost.
             const int64_t seconds = record["captured"].as<int64_t>() + stationClock.offset();
             record["data"]["timestamp"] = utcTimestamp(seconds);
-            if (policy::accepted(api.post(record["data"].as<JsonVariantConst>()))) Serial.println(F("Measurement sent directly (storage unavailable)"));
+            delivered = policy::accepted(api.post(record["data"].as<JsonVariantConst>()));
+            if (delivered) Serial.println(F("Measurement sent directly (storage unavailable)"));
         }
         record.clear();
         record.shrinkToFit();
@@ -159,15 +190,17 @@ void runCycle() {
             const uint32_t elapsed = millis() - cycleStarted;
             const uint32_t remaining = elapsed < budget ? budget - elapsed : 0;
             const uint32_t requestBudget = (config.handshakeTimeout + 3 * config.timeout + 5) * 1000;
-            if (remaining > requestBudget) queue.send(api, stationClock, millis() + std::min<uint32_t>(remaining - requestBudget, 20000));
+            if (remaining > requestBudget) queue.send(api, stationClock,
+                millis() + std::min<uint32_t>(remaining - requestBudget, 20000), currentRecord, &delivered);
             else Serial.println(F("Cycle time budget reached; queued measurements retained"));
         }
     }
     cycleGuard.detach();
+    indicateUnsentMeasurement(delivered);
 }
 
 void help() {
-    Serial.println(F("Service console: help | status | list | https | run | selftest | sleep <seconds> | reboot"));
+    Serial.println(F("Service console: help | status | list | https | run | selftest | ledtest | sleep <seconds> | reboot"));
     Serial.println(F("Ctrl+C enters service mode; run performs a real measurement and upload"));
 }
 
@@ -182,11 +215,43 @@ void status() {
     if (clockReady && stationClock.synced()) Serial.printf("RTC UTC: %s\n", utcTimestamp(stationClock.now()).c_str());
 }
 
+void testLedPins() {
+    Serial.println(F("LED test: watch the blue LED. GPIO2 = 3 short flashes; GPIO1/TX = 2 long flashes."));
+    Serial.println(F("UART transmission is disabled throughout both patterns. No measurements are sent."));
+    Serial.flush();
+    const uint8_t sdkOutput = system_get_os_print();
+    system_set_os_print(0);
+    Serial.end();
+    // GPIO1 is disconnected from the UART before it is driven as an output.
+    digitalWrite(1, HIGH);
+    pinMode(1, OUTPUT);
+    initializeStatusLed();
+    delay(1000); // Separate UART activity from the first GPIO pattern.
+    for (unsigned i = 0; i < 3; ++i) {
+        digitalWrite(2, LOW);
+        delay(80);
+        digitalWrite(2, HIGH);
+        delay(220);
+    }
+    delay(1500);
+    for (unsigned i = 0; i < 2; ++i) {
+        digitalWrite(1, LOW);
+        delay(500);
+        digitalWrite(1, HIGH);
+        delay(500);
+    }
+    delay(1000);
+    Serial.begin(115200);
+    system_set_os_print(sdkOutput);
+    Serial.println(F("\nLED test complete: 3 short = GPIO2; 2 long = GPIO1/TX. Service mode remains active."));
+}
+
 void execute(const String& line) {
     if (line == "help") help();
     else if (line == "status") status();
     else if (line == "https") probeHttps();
     else if (line == "run") { runCycle(); status(); }
+    else if (line == "ledtest") testLedPins();
     else if (line == "selftest" && configured && mounted) queueSelfTest(config);
     else if (line == "list" && configured && mounted) {
         for (const auto& file : Queue(config).files()) { Serial.println(file); yield(); }
@@ -208,6 +273,7 @@ bool interruptRequested() {
 }
 
 void setup() {
+    initializeStatusLed();
     Serial.begin(115200);
     Serial.println();
     Serial.println(F("Weather station: Arduino/BearSSL"));
@@ -230,6 +296,7 @@ void setup() {
         configured = config.load();
         clockReady = stationClock.begin(cause == REASON_DEEP_SLEEP_AWAKE);
     } else Serial.println(F("Filesystem mount failed; automatic formatting is disabled"));
+    if (!service && interruptRequested()) service = true;
     if (cause == REASON_WDT_RST || cause == REASON_SOFT_WDT_RST ||
         (cause == REASON_SOFT_RESTART && guardMarker == guardMagic)) {
         if (!service) {
@@ -241,7 +308,10 @@ void setup() {
     service = true;
     probeHttps();
 #endif
-    if ((!configured || !clockReady) && !service) sleepFor(config.interval * 1000);
+    if ((!configured || !clockReady) && !service) {
+        indicateUnsentMeasurement(false);
+        sleepFor(config.interval * 1000);
+    }
     if (service) { help(); status(); Serial.print(F("station> ")); return; }
     runCycle();
     if (interruptRequested()) { service = true; help(); Serial.print(F("station> ")); return; }
